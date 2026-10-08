@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
     top_k: int = 4
 
+    # Comma-separated origins allowed to call the API directly from a browser.
+    # Only needed when the frontend is served from a different origin.
+    cors_origins: str = "https://localhost:5174,https://127.0.0.1:5174"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -33,19 +33,25 @@ npm install
 ## Run
 
 ```bash
-# 1. Backend (port 8001)
-uvicorn backend.main:app --port 8001
+# 1. Backend (port 8002)
+uvicorn backend.main:app --host 0.0.0.0 --port 8002
 
 # 2. Index the docs (first run, or after adding PDFs) — or use "Re-ingest documents" in the UI sidebar
-curl -X POST localhost:8001/ingest
+curl -X POST localhost:8002/ingest
 
-# 3. Frontend, development (hot reload): http://localhost:5173
+# 3. Frontend, development (hot reload): https://localhost:5174
 cd frontend && npm run dev
 ```
 
 The Vite dev server forwards `/health`, `/chat` and `/ingest` to the backend, so no CORS setup is needed. To point it at a backend on another host or port, start it with `BACKEND_URL=http://host:port npm run dev`.
 
-For a single-server setup, build the frontend once and FastAPI serves it at http://localhost:8001:
+The dev server listens on all network interfaces. Other machines on the same network can open the `Network:` URL that `npm run dev` prints (`https://<this-machine-ip>:5174`). If they can't connect, allow the port through the firewall (`sudo ufw allow 5174/tcp`).
+
+The dev server uses HTTPS with a self-signed certificate (`@vitejs/plugin-basic-ssl`), because browsers only allow microphone access on secure pages. On first visit the browser shows a "not private" warning: click **Advanced → Proceed** once per browser.
+
+If the browser calls the backend directly instead of going through the Vite proxy (`VITE_BACKEND_URL` set, or the frontend hosted elsewhere), add the frontend's origin to `CORS_ORIGINS` in `.env`.
+
+For a single-server setup, build the frontend once and FastAPI serves it at http://localhost:8002 (or `http://<this-machine-ip>:8002` from other machines):
 
 ```bash
 cd frontend && npm run build    # writes frontend/dist/, picked up on backend start
@@ -73,6 +79,7 @@ Milvus Lite allows only one process to open the database. While the backend is r
 | `COLLECTION_NAME` | `docs_rag`                               |
 | `DOCS_DIR`        | `./docs`                                 |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` / `TOP_K` | `1000` / `150` / `4` |
+| `CORS_ORIGINS`    | `https://localhost:5174,https://127.0.0.1:5174` |
 
 Don't name a variable `MILVUS_URI`. pymilvus reads it from `.env` itself and expects a server URL.
 

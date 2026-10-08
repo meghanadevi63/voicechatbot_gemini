@@ -4,9 +4,11 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from backend.config import get_settings
 from backend.ingest import ingest
 from backend.rag import RAGChain
 
@@ -43,6 +45,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RAG Chatbot API", lifespan=lifespan)
+
+origins = [o.strip() for o in get_settings().cors_origins.split(",") if o.strip()]
+if origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
 
 
 @app.get("/health")
