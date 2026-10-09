@@ -6,7 +6,7 @@ import basicSsl from "@vitejs/plugin-basic-ssl";
 // uses same-origin URLs and needs no CORS setup. In production FastAPI serves
 // the built files from dist/ itself.
 const backend = process.env.BACKEND_URL || "http://localhost:8002";
-const apiPaths = ["/health", "/chat", "/ingest"];
+const apiPaths = ["/health", "/chat", "/ingest", "/transcribe"];
 
 export default defineConfig({
   // Self-signed HTTPS so the page is a secure context (needed for microphone

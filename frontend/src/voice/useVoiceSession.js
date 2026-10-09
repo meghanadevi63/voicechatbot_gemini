@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import captureUrl from "./capture-worklet.js?url";
+import { micError, micSupported, openMic } from "./mic.js";
 import playbackUrl from "./playback-worklet.js?url";
 
 // Same origin by default (Vite proxy in dev, FastAPI in prod), like api.js
 const BASE = (import.meta.env.VITE_BACKEND_URL || "").replace(/\/$/, "");
 const EMPTY_CAPTION = { user: "", assistant: "" };
-const RELEASE_TAIL_MS = 300; // push-to-talk: keep sending this long after release
+const AUTO_CLOSE_DELAY_MS = 500; // spoken replies: close this long after playback ends
 
 function liveUrl(params) {
   const origin = BASE
@@ -15,21 +15,14 @@ function liveUrl(params) {
   return `${origin}/live${query ? `?${query}` : ""}`;
 }
 
-function startError(e) {
-  if (e.name === "NotAllowedError") {
-    return "Microphone access was blocked. Allow it in the browser's site settings and try again.";
-  }
-  if (e.name === "NotFoundError") return "No microphone was found.";
-  return `Couldn't start voice chat: ${e.message || e.name}`;
-}
-
 function closeError(event) {
   if (event.reason) return event.reason;
   return event.code === 1006 ? "Can't reach the backend. Is it running?" : "The voice connection closed.";
 }
 
-// The first event of a new turn clears the previous turn's caption (which stays up until then,
-// because playback usually outlasts the turn_complete event)
+const newTurn = () => ({ user: "", assistant: "", ragAnswer: "", sources: [], interrupted: false });
+
+// Marks the first event of a new turn (clears any caption left from an unfinished one)
 function beginTurn(s) {
   if (!s.turnDone) return;
   s.turnDone = false;
@@ -44,20 +37,21 @@ function pcm16ToFloat32(buffer) {
 }
 
 /**
- * One voice conversation over the backend's /live WebSocket (see voice_plan.md).
+ * A Gemini Live session over the backend's /live WebSocket (see voice_plan.md). Two kinds:
+ *  - hands-free (mic: true): a spoken conversation; Gemini detects pauses and the user can talk over answers
+ *  - spoken reply (mic: false, text): speaks the answer to one dictated question, then closes itself
  *
  * state: idle | connecting | listening | thinking | speaking | error
- * talk: vad (hands-free) | ptt (push-to-talk: pressTalk / releaseTalk; held is true while pressed)
- * caption: live transcript of the current turn ({user, assistant})
  * levelRef: current mic loudness (0..1), read by the level meter without re-rendering
- * onTurn({user, assistant, sources, interrupted}) is called when the model finishes a turn.
+ * caption: live transcript of the turn in progress; cleared once the turn completes
+ * onTurn({user, assistant, sources, interrupted}) is called when the model finishes a turn
+ * (in relay mode, assistant is the RAG answer text).
  */
 export default function useVoiceSession({ onTurn } = {}) {
   const [state, setState] = useState("idle");
   const [error, setError] = useState(null);
   const [muted, setMuted] = useState(false);
-  const [talk, setTalk] = useState("vad");
-  const [held, setHeld] = useState(false);
+  const [withMic, setWithMic] = useState(false);
   const [caption, setCaption] = useState(EMPTY_CAPTION);
   const levelRef = useRef(0);
   const sessionRef = useRef(null);
@@ -66,7 +60,7 @@ export default function useVoiceSession({ onTurn } = {}) {
 
   const teardown = useCallback((s) => {
     s.closed = true;
-    clearTimeout(s.releaseTimer);
+    clearTimeout(s.closeTimer);
     levelRef.current = 0;
     try {
       s.ws?.close();
@@ -77,6 +71,17 @@ export default function useVoiceSession({ onTurn } = {}) {
     s.ctx.close().catch(() => {});
     if (sessionRef.current === s) sessionRef.current = null;
   }, []);
+
+  const finish = useCallback(
+    (s) => {
+      if (s.closed) return;
+      if (s.ws?.readyState === WebSocket.OPEN) s.ws.send(JSON.stringify({ type: "end" }));
+      teardown(s);
+      setState("idle");
+      setCaption(EMPTY_CAPTION);
+    },
+    [teardown]
+  );
 
   const fail = useCallback(
     (s, message) => {
@@ -89,17 +94,26 @@ export default function useVoiceSession({ onTurn } = {}) {
   );
 
   // Derive the visible state from what the session is doing right now
-  const refresh = useCallback((s) => {
-    if (s.closed || !s.ready) return;
-    const speaking = s.playing || (s.gotAudio && !s.turnDone);
-    setState(speaking ? "speaking" : s.thinking ? "thinking" : "listening");
-  }, []);
+  const refresh = useCallback(
+    (s) => {
+      if (s.closed || !s.ready) return;
+      const speaking = s.playing || (s.gotAudio && !s.turnDone);
+      setState(speaking ? "speaking" : s.thinking ? "thinking" : "listening");
+      // A spoken reply closes itself once the answer has been played
+      clearTimeout(s.closeTimer);
+      if (!s.mic && !s.awaitingReply && !speaking) {
+        s.closeTimer = setTimeout(() => !s.playing && finish(s), AUTO_CLOSE_DELAY_MS);
+      }
+    },
+    [finish]
+  );
 
   const handleEvent = useCallback(
     (s, event) => {
       switch (event.type) {
         case "ready":
           s.ready = true;
+          if (s.text) s.ws.send(JSON.stringify({ type: "text", text: s.text }));
           refresh(s);
           break;
         case "input_transcript":
@@ -122,24 +136,30 @@ export default function useVoiceSession({ onTurn } = {}) {
         case "sources":
           s.turn.sources = event.sources;
           break;
+        case "rag_answer":
+          s.turn.ragAnswer = event.text;
+          break;
         case "interrupted":
           // The user talked over the answer: drop the queued audio and listen again
           s.playback.port.postMessage({ type: "clear" });
           s.turn.interrupted = true;
           s.gotAudio = false;
-          s.discardAudio = false;
           refresh(s);
           break;
         case "turn_complete": {
-          const { user, assistant } = s.turn;
-          if (user.trim()) s.history.push({ role: "user", content: user.trim() });
-          if (assistant.trim()) s.history.push({ role: "assistant", content: assistant.trim() });
-          onTurnRef.current?.({ ...s.turn });
-          s.turn = { user: "", assistant: "", sources: [], interrupted: false };
+          const { interrupted, ragAnswer, sources } = s.turn;
+          const user = s.turn.user.trim();
+          // Relay mode: keep the RAG text, unless the user cut it off (then keep what was actually said)
+          const assistant = ((!interrupted && ragAnswer) || s.turn.assistant).trim();
+          onTurnRef.current?.({ user, assistant, sources, interrupted });
+          // The finished turn now lives in the chat, so the live caption can go
+          s.turn = newTurn();
+          s.caption = { ...EMPTY_CAPTION };
+          setCaption(EMPTY_CAPTION);
           s.turnDone = true;
           s.thinking = false;
           s.gotAudio = false;
-          s.discardAudio = false;
+          s.awaitingReply = false;
           refresh(s);
           break;
         }
@@ -151,17 +171,20 @@ export default function useVoiceSession({ onTurn } = {}) {
     [refresh]
   );
 
+  /**
+   * answer: agent | rag; history: conversation so far as [{role, content}]
+   * mic: true for hands-free; false with text for a spoken reply to that text
+   */
   const start = useCallback(
-    async ({ answer, talk = "vad", history = [] } = {}) => {
-      if (sessionRef.current) return;
+    async ({ answer, history = [], mic = true, text = "" } = {}) => {
+      if (sessionRef.current) teardown(sessionRef.current); // one session at a time
       setError(null);
       setMuted(false);
-      setHeld(false);
-      setTalk(talk);
+      setWithMic(mic);
       setCaption(EMPTY_CAPTION);
       setState("connecting");
 
-      if (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode) {
+      if (!window.AudioWorkletNode || (mic && !micSupported())) {
         setError("Voice chat needs a secure (https) page in a browser with microphone support.");
         setState("error");
         return;
@@ -171,34 +194,26 @@ export default function useVoiceSession({ onTurn } = {}) {
       const s = {
         ctx: new AudioContext(),
         answer,
-        talk,
-        // Conversation so far (seeded history + finished voice turns), reused when switching talk mode
-        history: [...history],
+        history,
+        mic,
+        text,
+        awaitingReply: Boolean(text),
         ready: false,
         muted: false,
-        held: false, // push-to-talk button is down (or in its release tail)
-        releasing: false,
-        discardAudio: false, // drop the rest of an answer the user talked over in push-to-talk
-        releaseTimer: null,
         playing: false,
         thinking: false,
         gotAudio: false,
         turnDone: true,
         closed: false,
+        closeTimer: null,
         caption: { ...EMPTY_CAPTION },
-        turn: { user: "", assistant: "", sources: [], interrupted: false },
+        turn: newTurn(),
       };
       sessionRef.current = s;
 
       try {
-        s.stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-        });
-        // Ended while the permission prompt was open: release the mic we just got
-        if (s.closed) return teardown(s);
-        await Promise.all([s.ctx.audioWorklet.addModule(captureUrl), s.ctx.audioWorklet.addModule(playbackUrl)]);
-        if (s.closed) return teardown(s);
-
+        await s.ctx.audioWorklet.addModule(playbackUrl);
+        if (s.closed) return;
         s.playback = new AudioWorkletNode(s.ctx, "playback-processor", {
           numberOfInputs: 0,
           outputChannelCount: [1],
@@ -209,17 +224,18 @@ export default function useVoiceSession({ onTurn } = {}) {
         };
         s.playback.connect(s.ctx.destination);
 
-        const capture = new AudioWorkletNode(s.ctx, "capture-processor", { numberOfOutputs: 0 });
-        capture.port.onmessage = ({ data }) => {
-          // Hands-free streams unless muted; push-to-talk streams only while the button is held
-          const live = s.talk === "ptt" ? s.held : !s.muted;
-          levelRef.current = live ? data.level : 0;
-          if (live && s.ready && s.ws.readyState === WebSocket.OPEN) s.ws.send(data.pcm);
-        };
-        s.ctx.createMediaStreamSource(s.stream).connect(capture);
+        if (mic) {
+          s.stream = await openMic(s.ctx, ({ pcm, level }) => {
+            const live = !s.muted;
+            levelRef.current = live ? level : 0;
+            if (live && s.ready && s.ws.readyState === WebSocket.OPEN) s.ws.send(pcm);
+          });
+          // Ended while the permission prompt was open: release the mic we just got
+          if (s.closed) return teardown(s);
+        }
         await s.ctx.resume();
 
-        const ws = new WebSocket(liveUrl({ answer, talk }));
+        const ws = new WebSocket(liveUrl({ answer, talk: "vad" }));
         ws.binaryType = "arraybuffer";
         s.ws = ws;
         ws.onopen = () => ws.send(JSON.stringify({ type: "history", turns: history }));
@@ -229,7 +245,6 @@ export default function useVoiceSession({ onTurn } = {}) {
             handleEvent(s, JSON.parse(data));
             return;
           }
-          if (s.discardAudio) return;
           beginTurn(s);
           s.gotAudio = true;
           s.thinking = false;
@@ -239,7 +254,7 @@ export default function useVoiceSession({ onTurn } = {}) {
         };
         ws.onclose = (event) => fail(s, closeError(event));
       } catch (e) {
-        fail(s, startError(e));
+        fail(s, mic ? micError(e) : `Couldn't start the spoken answer: ${e.message || e.name}`);
       }
     },
     [fail, handleEvent, refresh, teardown]
@@ -247,66 +262,27 @@ export default function useVoiceSession({ onTurn } = {}) {
 
   const stop = useCallback(() => {
     const s = sessionRef.current;
-    if (s?.ws?.readyState === WebSocket.OPEN) s.ws.send(JSON.stringify({ type: "end" }));
-    if (s) teardown(s);
+    if (s) finish(s);
     setState("idle");
     setError(null);
     setMuted(false);
-    setHeld(false);
     setCaption(EMPTY_CAPTION);
-  }, [teardown]);
+  }, [finish]);
 
-  // Push-to-talk: button (or Space) pressed
-  const pressTalk = useCallback(() => {
-    const s = sessionRef.current;
-    if (!s?.ready || s.closed || s.talk !== "ptt") return;
-    clearTimeout(s.releaseTimer);
-    if (s.held && !s.releasing) return;
-    // Pressed again during the release tail: still the same utterance, so no new activity_start
-    if (!s.held) s.ws.send(JSON.stringify({ type: "activity_start" }));
-    s.held = true;
-    s.releasing = false;
-    if (s.gotAudio && !s.turnDone) {
-      // Talking over the answer: stop it now and ignore the rest of it
-      s.discardAudio = true;
-      s.turn.interrupted = true;
-    }
-    s.playback.port.postMessage({ type: "clear" });
-    s.gotAudio = false;
-    s.thinking = false;
-    setHeld(true);
-    refresh(s);
-  }, [refresh]);
-
-  // Push-to-talk: released. Keep sending for a moment so the last word isn't cut off.
-  const releaseTalk = useCallback(() => {
-    const s = sessionRef.current;
-    if (!s?.held || s.releasing) return;
-    s.releasing = true;
-    setHeld(false);
-    s.releaseTimer = setTimeout(() => {
-      s.held = false;
-      s.releasing = false;
-      if (!s.closed && s.ws.readyState === WebSocket.OPEN) s.ws.send(JSON.stringify({ type: "activity_end" }));
-    }, RELEASE_TAIL_MS);
-  }, []);
-
-  // Talk mode is fixed per Gemini session: reconnect with the conversation so far.
-  // Called from a click, so the new AudioContext is allowed to play.
-  const switchTalk = useCallback(
-    (mode) => {
+  // The answer mode is fixed per Gemini session: a hands-free session reconnects with the
+  // conversation so far. Called from a click, so the new AudioContext is allowed to play.
+  const switchAnswer = useCallback(
+    (answer, history) => {
       const s = sessionRef.current;
-      if (!s || s.talk === mode) return;
-      const { answer, history } = s;
-      stop();
-      start({ answer, talk: mode, history });
+      if (!s?.mic || s.answer === answer) return;
+      start({ answer, history, mic: true });
     },
-    [start, stop]
+    [start]
   );
 
   const toggleMute = useCallback(() => {
     const s = sessionRef.current;
-    if (!s) return;
+    if (!s?.mic) return;
     s.muted = !s.muted;
     s.stream?.getAudioTracks().forEach((t) => (t.enabled = !s.muted));
     // Muting mid-sentence: let Gemini end the turn now instead of waiting for silence
@@ -319,19 +295,5 @@ export default function useVoiceSession({ onTurn } = {}) {
   // Close the session if the component goes away (e.g. hot reload)
   useEffect(() => () => sessionRef.current && teardown(sessionRef.current), [teardown]);
 
-  return {
-    state,
-    error,
-    muted,
-    talk,
-    held,
-    caption,
-    levelRef,
-    start,
-    stop,
-    toggleMute,
-    pressTalk,
-    releaseTalk,
-    switchTalk,
-  };
+  return { state, error, muted, withMic, caption, levelRef, start, stop, toggleMute, switchAnswer };
 }

@@ -233,9 +233,14 @@ class LiveBridge:
                 continue
             if not message.get("text"):
                 continue
-            kind = json.loads(message["text"]).get("type")
+            msg = json.loads(message["text"])
+            kind = msg.get("type")
             if kind == "end":
                 return
+            if kind == "text" and msg.get("text", "").strip():
+                # A dictated (or typed) question that should get a spoken answer
+                await session.send_realtime_input(text=msg["text"].strip())
+                continue
             if kind == "activity_start" and self.talk_mode == "ptt":
                 await session.send_realtime_input(activity_start=types.ActivityStart())
             elif kind == "activity_end" and self.talk_mode == "ptt":
@@ -316,6 +321,9 @@ class LiveBridge:
         await session.send_tool_response(
             function_responses=[types.FunctionResponse(id=fc.id, name=fc.name, response=response)]
         )
+        if fc.name == "ask_knowledge_base" and "answer" in response:
+            # The chat stores the RAG text itself, not Gemini's transcript of reading it
+            await self.send_event("rag_answer", text=response["answer"])
         if sources:
             await self.send_event("sources", sources=sources)
 

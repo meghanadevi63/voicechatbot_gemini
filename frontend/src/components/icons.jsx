@@ -42,6 +42,19 @@ export const MicOffIcon = () => (
   </svg>
 );
 
+// Hands-free voice conversation
+export const WaveIcon = () => (
+  <svg {...base}>
+    <path d="M3 10v4M7.5 6v12M12 3v18M16.5 7v10M21 10v4" />
+  </svg>
+);
+
+export const StopIcon = () => (
+  <svg {...base}>
+    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" />
+  </svg>
+);
+
 export const PlusIcon = () => (
   <svg {...base}>
     <path d="M12 5v14M5 12h14" />

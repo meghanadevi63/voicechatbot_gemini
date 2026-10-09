@@ -31,7 +31,46 @@ function IngestResult({ ingest }) {
   return null;
 }
 
-export default function Sidebar({ open, onClose, backend, ingest, onIngest, onClear, canClear }) {
+const ANSWER_MODES = [
+  { value: "agent", label: "Gemini answers", hint: "Gemini searches the documents and answers. Fastest." },
+  {
+    value: "rag",
+    label: "Read RAG answer",
+    hint: "Gemini reads the same answer typed chat gives. About a second slower.",
+  },
+];
+
+function Choice({ name, options, value, onChange }) {
+  return (
+    <div className="choice" role="radiogroup">
+      {options.map((o) => (
+        <label key={o.value} className={value === o.value ? "on" : ""}>
+          <input
+            type="radio"
+            name={name}
+            value={o.value}
+            checked={value === o.value}
+            onChange={() => onChange(o.value)}
+          />
+          <span className="choice-label">{o.label}</span>
+          <span className="choice-hint">{o.hint}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+export default function Sidebar({
+  open,
+  onClose,
+  backend,
+  ingest,
+  onIngest,
+  onClear,
+  canClear,
+  voiceSettings,
+  onVoiceSettings,
+}) {
   const status = STATUS[backend];
   const ingesting = ingest.status === "running";
 
@@ -59,6 +98,16 @@ export default function Sidebar({ open, onClose, backend, ingest, onIngest, onCl
             <span className="dot" />
             {status.label}
           </div>
+        </section>
+
+        <section className="sidebar-section">
+          <h2>Voice answers</h2>
+          <Choice
+            name="voice-answer"
+            options={ANSWER_MODES}
+            value={voiceSettings.answer}
+            onChange={(answer) => onVoiceSettings({ answer })}
+          />
         </section>
 
         <section className="sidebar-section">

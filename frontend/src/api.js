@@ -32,3 +32,7 @@ export const sendChat = (question, history) =>
   request("/chat", { method: "POST", body: JSON.stringify({ question, history }) });
 
 export const ingestDocs = () => request("/ingest", { method: "POST" });
+
+// One dictated clip: 16 kHz mono PCM16 (ArrayBuffer) -> {text}
+export const transcribe = (pcm) =>
+  request("/transcribe", { method: "POST", body: pcm, headers: { "Content-Type": "application/octet-stream" } });

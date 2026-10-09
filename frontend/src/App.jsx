@@ -9,7 +9,7 @@ import { MenuIcon } from "./components/icons.jsx";
 import useVoiceSession from "./voice/useVoiceSession.js";
 
 const STORAGE_KEY = "docs-assistant-messages";
-const TALK_KEY = "docs-assistant-talk-mode";
+const VOICE_KEY = "docs-assistant-voice";
 const HEALTH_INTERVAL_MS = 15000;
 
 let nextId = 0;
@@ -23,11 +23,13 @@ function loadMessages() {
   }
 }
 
-function loadTalkMode() {
+// Voice settings: answer mode (agent: Gemini answers | rag: Gemini reads the RAG answer)
+function loadVoiceSettings() {
   try {
-    return localStorage.getItem(TALK_KEY) === "ptt" ? "ptt" : "vad";
+    const saved = JSON.parse(localStorage.getItem(VOICE_KEY)) || {};
+    return { answer: saved.answer === "rag" ? "rag" : "agent" };
   } catch {
-    return "vad";
+    return { answer: "agent" };
   }
 }
 
@@ -45,20 +47,34 @@ export default function App() {
   const [ingest, setIngest] = useState({ status: "idle" });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef(null);
-  const voice = useVoiceSession();
-  const [talkMode, setTalkMode] = useState(loadTalkMode);
+  const [voiceSettings, setVoiceSettings] = useState(loadVoiceSettings);
 
-  const changeTalkMode = useCallback(
-    (mode) => {
-      setTalkMode(mode);
+  // A finished voice turn becomes ordinary chat messages (marked as voice)
+  const addVoiceTurn = useCallback(({ user, assistant, sources, interrupted }) => {
+    const turn = [];
+    if (user) turn.push({ id: newId(), role: "user", content: user, voice: true });
+    if (assistant) {
+      turn.push({ id: newId(), role: "assistant", content: assistant, sources, interrupted, voice: true });
+    }
+    if (turn.length) setMessages((prev) => [...prev, ...turn]);
+  }, []);
+
+  const voice = useVoiceSession({ onTurn: addVoiceTurn });
+  const { start: startVoice, stop: stopVoice, switchAnswer } = voice;
+  const handsFreeActive = voice.withMic && voice.state !== "idle";
+
+  const changeVoiceSettings = useCallback(
+    (changes) => {
+      const next = { ...voiceSettings, ...changes };
+      setVoiceSettings(next);
       try {
-        localStorage.setItem(TALK_KEY, mode);
+        localStorage.setItem(VOICE_KEY, JSON.stringify(next));
       } catch {
         // Storage unavailable: the choice just isn't remembered
       }
-      voice.switchTalk(mode);
+      switchAnswer(next.answer, toHistory(messages)); // reconnects a hands-free conversation
     },
-    [voice.switchTalk]
+    [voiceSettings, switchAnswer, messages]
   );
 
   useEffect(() => {
@@ -85,11 +101,18 @@ export default function App() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, pending]);
+  }, [messages, pending, voice.caption]);
 
   const ask = useCallback(
-    async (question) => {
+    async (question, { dictated = false } = {}) => {
       const history = toHistory(messages);
+      if (dictated) {
+        // Dictated question: Gemini answers out loud (in the chosen answer mode); the answer
+        // arrives as a voice turn through addVoiceTurn
+        setMessages((prev) => [...prev, { id: newId(), role: "user", content: question, voice: true }]);
+        startVoice({ answer: voiceSettings.answer, history, mic: false, text: question });
+        return;
+      }
       setMessages((prev) => [...prev, { id: newId(), role: "user", content: question }]);
       setPending(true);
       try {
@@ -104,7 +127,7 @@ export default function App() {
         setPending(false);
       }
     },
-    [messages]
+    [messages, startVoice, voiceSettings.answer]
   );
 
   const reingest = useCallback(async () => {
@@ -117,9 +140,13 @@ export default function App() {
   }, []);
 
   const clearChat = useCallback(() => {
+    stopVoice(); // a running voice session would still remember the old conversation
     setMessages([]);
     setSidebarOpen(false);
-  }, []);
+  }, [stopVoice]);
+
+  const { caption } = voice;
+  const hasLiveTurn = Boolean(caption.user || caption.assistant);
 
   return (
     <div className="app">
@@ -131,6 +158,8 @@ export default function App() {
         onIngest={reingest}
         onClear={clearChat}
         canClear={messages.length > 0 && !pending}
+        voiceSettings={voiceSettings}
+        onVoiceSettings={changeVoiceSettings}
       />
 
       <main className="main">
@@ -143,22 +172,28 @@ export default function App() {
 
         <div className="messages">
           <div className="messages-inner">
-            {messages.length === 0 ? (
+            {messages.length === 0 && !hasLiveTurn ? (
               <EmptyState onPick={ask} disabled={pending} />
             ) : (
               messages.map((m) => <ChatMessage key={m.id} message={m} />)
+            )}
+            {/* The voice turn in progress, streamed live until it completes */}
+            {caption.user && <ChatMessage message={{ role: "user", content: caption.user, voice: true, live: true }} />}
+            {caption.assistant && (
+              <ChatMessage message={{ role: "assistant", content: caption.assistant, voice: true, live: true }} />
             )}
             {pending && <ChatMessage message={{ role: "assistant", typing: true }} />}
             <div ref={bottomRef} />
           </div>
         </div>
 
-        <VoiceBar voice={voice} onTalkChange={changeTalkMode} />
+        <VoiceBar voice={voice} />
         <Composer
           onSend={ask}
           disabled={pending}
-          onVoice={() => voice.start({ talk: talkMode, history: toHistory(messages) })}
-          voiceActive={voice.state !== "idle"}
+          onHandsFree={() => startVoice({ answer: voiceSettings.answer, history: toHistory(messages), mic: true })}
+          onDictateStart={() => !voice.withMic && stopVoice()}
+          handsFreeActive={handsFreeActive}
         />
       </main>
     </div>

@@ -4,7 +4,7 @@ from typing import Literal
 
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +14,7 @@ from backend.config import get_settings
 from backend.ingest import ingest
 from backend.live import LiveBridge
 from backend.rag import RAGChain
+from backend.transcribe import MAX_SECONDS, RATE, transcribe
 
 
 class ChatTurn(BaseModel):
@@ -75,6 +76,22 @@ async def chat(req: ChatRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/transcribe")
+async def transcribe_clip(request: Request):
+    """Body: raw 16 kHz mono PCM16 (one dictated clip). Returns {"text": ...}."""
+    pcm = await request.body()
+    if not pcm:
+        raise HTTPException(status_code=400, detail="No audio")
+    if len(pcm) > RATE * 2 * MAX_SECONDS:
+        raise HTTPException(status_code=413, detail=f"Clip longer than {MAX_SECONDS} s")
+    if not get_settings().gemini_api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not set on the server")
+    try:
+        return {"text": await transcribe(pcm[: len(pcm) // 2 * 2])}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Transcription failed: {e}")
 
 
 def origin_allowed(ws: WebSocket) -> bool:
