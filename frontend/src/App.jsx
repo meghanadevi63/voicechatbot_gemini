@@ -9,6 +9,7 @@ import { MenuIcon } from "./components/icons.jsx";
 import useVoiceSession from "./voice/useVoiceSession.js";
 
 const STORAGE_KEY = "docs-assistant-messages";
+const TALK_KEY = "docs-assistant-talk-mode";
 const HEALTH_INTERVAL_MS = 15000;
 
 let nextId = 0;
@@ -19,6 +20,14 @@ function loadMessages() {
     return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
   } catch {
     return [];
+  }
+}
+
+function loadTalkMode() {
+  try {
+    return localStorage.getItem(TALK_KEY) === "ptt" ? "ptt" : "vad";
+  } catch {
+    return "vad";
   }
 }
 
@@ -37,6 +46,20 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef(null);
   const voice = useVoiceSession();
+  const [talkMode, setTalkMode] = useState(loadTalkMode);
+
+  const changeTalkMode = useCallback(
+    (mode) => {
+      setTalkMode(mode);
+      try {
+        localStorage.setItem(TALK_KEY, mode);
+      } catch {
+        // Storage unavailable: the choice just isn't remembered
+      }
+      voice.switchTalk(mode);
+    },
+    [voice.switchTalk]
+  );
 
   useEffect(() => {
     try {
@@ -130,11 +153,11 @@ export default function App() {
           </div>
         </div>
 
-        <VoiceBar voice={voice} />
+        <VoiceBar voice={voice} onTalkChange={changeTalkMode} />
         <Composer
           onSend={ask}
           disabled={pending}
-          onVoice={() => voice.start({ history: toHistory(messages) })}
+          onVoice={() => voice.start({ talk: talkMode, history: toHistory(messages) })}
           voiceActive={voice.state !== "idle"}
         />
       </main>

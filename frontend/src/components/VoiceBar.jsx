@@ -9,6 +9,11 @@ const LABELS = {
   error: "Voice chat stopped",
 };
 
+const TALK_MODES = [
+  { value: "vad", label: "Hands-free" },
+  { value: "ptt", label: "Push to talk" },
+];
+
 // Bar heights follow the mic level; animated straight from the ref so it doesn't re-render the app
 const BAR_SHAPE = [0.55, 0.85, 1, 0.85, 0.55];
 
@@ -39,22 +44,92 @@ function LevelMeter({ levelRef, active }) {
   );
 }
 
-export default function VoiceBar({ voice }) {
-  const { state, error, muted, caption, levelRef, stop, toggleMute } = voice;
+function isTyping(target) {
+  return target.closest?.("textarea, input, select, [contenteditable='true']");
+}
+
+// Holding Space talks in push-to-talk mode, unless the user is typing somewhere
+function useSpaceToTalk(enabled, press, release) {
+  useEffect(() => {
+    if (!enabled) return;
+    const down = (e) => {
+      if (e.code !== "Space" || isTyping(e.target)) return;
+      e.preventDefault(); // don't scroll or click the focused button
+      if (!e.repeat) press();
+    };
+    const up = (e) => {
+      if (e.code !== "Space" || isTyping(e.target)) return;
+      e.preventDefault();
+      release();
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", release); // don't get stuck talking when the window loses focus
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", release);
+    };
+  }, [enabled, press, release]);
+}
+
+function HoldToTalk({ held, disabled, onPress, onRelease }) {
+  return (
+    <button
+      className={`hold-btn ${held ? "held" : ""}`}
+      disabled={disabled}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.currentTarget.setPointerCapture(e.pointerId); // keep getting pointerup if the finger slides off
+        onPress();
+      }}
+      onPointerUp={onRelease}
+      onPointerCancel={onRelease}
+      onContextMenu={(e) => e.preventDefault()} // long-press menu on touch screens
+      aria-pressed={held}
+    >
+      <MicIcon />
+      {held ? "Release to send" : "Hold to talk"}
+      <span className="hold-key">or hold Space</span>
+    </button>
+  );
+}
+
+export default function VoiceBar({ voice, onTalkChange }) {
+  const { state, error, muted, talk, held, caption, levelRef, stop, toggleMute, pressTalk, releaseTalk } = voice;
+  const ptt = talk === "ptt";
+  const active = state !== "idle" && state !== "error";
+  useSpaceToTalk(active && ptt, pressTalk, releaseTalk);
   if (state === "idle") return null;
 
-  const label = state === "listening" && muted ? "Muted" : LABELS[state];
+  let label = LABELS[state];
+  if (state === "listening" && ptt) label = held ? "Listening… release to send" : "Ready";
+  else if (state === "listening" && muted) label = "Muted";
 
   return (
     <div className="voice-wrap">
       <div className={`voice-bar voice-${state}`}>
         <div className="voice-row">
-          <LevelMeter levelRef={levelRef} active={state === "listening" && !muted} />
+          <LevelMeter levelRef={levelRef} active={state === "listening" && (ptt ? held : !muted)} />
           <span className="voice-label" role="status">
             {label}
           </span>
           <div className="voice-actions">
-            {state !== "error" && (
+            {active && (
+              <div className="segmented" role="group" aria-label="Talk mode">
+                {TALK_MODES.map((m) => (
+                  <button
+                    key={m.value}
+                    className={talk === m.value ? "on" : ""}
+                    aria-pressed={talk === m.value}
+                    onClick={() => onTalkChange(m.value)}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {active && !ptt && (
               <button className="btn voice-btn" onClick={toggleMute} disabled={state === "connecting"}>
                 {muted ? <MicIcon /> : <MicOffIcon />}
                 {muted ? "Unmute" : "Mute"}
@@ -66,6 +141,9 @@ export default function VoiceBar({ voice }) {
             </button>
           </div>
         </div>
+        {active && ptt && (
+          <HoldToTalk held={held} disabled={state === "connecting"} onPress={pressTalk} onRelease={releaseTalk} />
+        )}
         {error && <p className="voice-message">{error}</p>}
         {(caption.user || caption.assistant) && (
           <div className="voice-caption" aria-live="polite">

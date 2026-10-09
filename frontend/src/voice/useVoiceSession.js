@@ -5,6 +5,7 @@ import playbackUrl from "./playback-worklet.js?url";
 // Same origin by default (Vite proxy in dev, FastAPI in prod), like api.js
 const BASE = (import.meta.env.VITE_BACKEND_URL || "").replace(/\/$/, "");
 const EMPTY_CAPTION = { user: "", assistant: "" };
+const RELEASE_TAIL_MS = 300; // push-to-talk: keep sending this long after release
 
 function liveUrl(params) {
   const origin = BASE
@@ -46,6 +47,7 @@ function pcm16ToFloat32(buffer) {
  * One voice conversation over the backend's /live WebSocket (see voice_plan.md).
  *
  * state: idle | connecting | listening | thinking | speaking | error
+ * talk: vad (hands-free) | ptt (push-to-talk: pressTalk / releaseTalk; held is true while pressed)
  * caption: live transcript of the current turn ({user, assistant})
  * levelRef: current mic loudness (0..1), read by the level meter without re-rendering
  * onTurn({user, assistant, sources, interrupted}) is called when the model finishes a turn.
@@ -54,6 +56,8 @@ export default function useVoiceSession({ onTurn } = {}) {
   const [state, setState] = useState("idle");
   const [error, setError] = useState(null);
   const [muted, setMuted] = useState(false);
+  const [talk, setTalk] = useState("vad");
+  const [held, setHeld] = useState(false);
   const [caption, setCaption] = useState(EMPTY_CAPTION);
   const levelRef = useRef(0);
   const sessionRef = useRef(null);
@@ -62,6 +66,7 @@ export default function useVoiceSession({ onTurn } = {}) {
 
   const teardown = useCallback((s) => {
     s.closed = true;
+    clearTimeout(s.releaseTimer);
     levelRef.current = 0;
     try {
       s.ws?.close();
@@ -122,16 +127,22 @@ export default function useVoiceSession({ onTurn } = {}) {
           s.playback.port.postMessage({ type: "clear" });
           s.turn.interrupted = true;
           s.gotAudio = false;
+          s.discardAudio = false;
           refresh(s);
           break;
-        case "turn_complete":
+        case "turn_complete": {
+          const { user, assistant } = s.turn;
+          if (user.trim()) s.history.push({ role: "user", content: user.trim() });
+          if (assistant.trim()) s.history.push({ role: "assistant", content: assistant.trim() });
           onTurnRef.current?.({ ...s.turn });
           s.turn = { user: "", assistant: "", sources: [], interrupted: false };
           s.turnDone = true;
           s.thinking = false;
           s.gotAudio = false;
+          s.discardAudio = false;
           refresh(s);
           break;
+        }
         case "error":
           setError(event.message);
           break;
@@ -145,6 +156,8 @@ export default function useVoiceSession({ onTurn } = {}) {
       if (sessionRef.current) return;
       setError(null);
       setMuted(false);
+      setHeld(false);
+      setTalk(talk);
       setCaption(EMPTY_CAPTION);
       setState("connecting");
 
@@ -157,8 +170,16 @@ export default function useVoiceSession({ onTurn } = {}) {
       // Created before any await, while we're still inside the click, so the browser allows audio
       const s = {
         ctx: new AudioContext(),
+        answer,
+        talk,
+        // Conversation so far (seeded history + finished voice turns), reused when switching talk mode
+        history: [...history],
         ready: false,
         muted: false,
+        held: false, // push-to-talk button is down (or in its release tail)
+        releasing: false,
+        discardAudio: false, // drop the rest of an answer the user talked over in push-to-talk
+        releaseTimer: null,
         playing: false,
         thinking: false,
         gotAudio: false,
@@ -190,8 +211,10 @@ export default function useVoiceSession({ onTurn } = {}) {
 
         const capture = new AudioWorkletNode(s.ctx, "capture-processor", { numberOfOutputs: 0 });
         capture.port.onmessage = ({ data }) => {
-          levelRef.current = s.muted ? 0 : data.level;
-          if (s.ready && !s.muted && s.ws.readyState === WebSocket.OPEN) s.ws.send(data.pcm);
+          // Hands-free streams unless muted; push-to-talk streams only while the button is held
+          const live = s.talk === "ptt" ? s.held : !s.muted;
+          levelRef.current = live ? data.level : 0;
+          if (live && s.ready && s.ws.readyState === WebSocket.OPEN) s.ws.send(data.pcm);
         };
         s.ctx.createMediaStreamSource(s.stream).connect(capture);
         await s.ctx.resume();
@@ -206,6 +229,7 @@ export default function useVoiceSession({ onTurn } = {}) {
             handleEvent(s, JSON.parse(data));
             return;
           }
+          if (s.discardAudio) return;
           beginTurn(s);
           s.gotAudio = true;
           s.thinking = false;
@@ -228,8 +252,57 @@ export default function useVoiceSession({ onTurn } = {}) {
     setState("idle");
     setError(null);
     setMuted(false);
+    setHeld(false);
     setCaption(EMPTY_CAPTION);
   }, [teardown]);
+
+  // Push-to-talk: button (or Space) pressed
+  const pressTalk = useCallback(() => {
+    const s = sessionRef.current;
+    if (!s?.ready || s.closed || s.talk !== "ptt") return;
+    clearTimeout(s.releaseTimer);
+    if (s.held && !s.releasing) return;
+    // Pressed again during the release tail: still the same utterance, so no new activity_start
+    if (!s.held) s.ws.send(JSON.stringify({ type: "activity_start" }));
+    s.held = true;
+    s.releasing = false;
+    if (s.gotAudio && !s.turnDone) {
+      // Talking over the answer: stop it now and ignore the rest of it
+      s.discardAudio = true;
+      s.turn.interrupted = true;
+    }
+    s.playback.port.postMessage({ type: "clear" });
+    s.gotAudio = false;
+    s.thinking = false;
+    setHeld(true);
+    refresh(s);
+  }, [refresh]);
+
+  // Push-to-talk: released. Keep sending for a moment so the last word isn't cut off.
+  const releaseTalk = useCallback(() => {
+    const s = sessionRef.current;
+    if (!s?.held || s.releasing) return;
+    s.releasing = true;
+    setHeld(false);
+    s.releaseTimer = setTimeout(() => {
+      s.held = false;
+      s.releasing = false;
+      if (!s.closed && s.ws.readyState === WebSocket.OPEN) s.ws.send(JSON.stringify({ type: "activity_end" }));
+    }, RELEASE_TAIL_MS);
+  }, []);
+
+  // Talk mode is fixed per Gemini session: reconnect with the conversation so far.
+  // Called from a click, so the new AudioContext is allowed to play.
+  const switchTalk = useCallback(
+    (mode) => {
+      const s = sessionRef.current;
+      if (!s || s.talk === mode) return;
+      const { answer, history } = s;
+      stop();
+      start({ answer, talk: mode, history });
+    },
+    [start, stop]
+  );
 
   const toggleMute = useCallback(() => {
     const s = sessionRef.current;
@@ -246,5 +319,19 @@ export default function useVoiceSession({ onTurn } = {}) {
   // Close the session if the component goes away (e.g. hot reload)
   useEffect(() => () => sessionRef.current && teardown(sessionRef.current), [teardown]);
 
-  return { state, error, muted, caption, levelRef, start, stop, toggleMute };
+  return {
+    state,
+    error,
+    muted,
+    talk,
+    held,
+    caption,
+    levelRef,
+    start,
+    stop,
+    toggleMute,
+    pressTalk,
+    releaseTalk,
+    switchTalk,
+  };
 }

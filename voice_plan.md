@@ -246,13 +246,23 @@ couldn't be tested headless and needs a manual check on real hardware.
 Captions stay in the voice bar for now. Phase 4 moves them into the chat list.
 
 ### Phase 3: Push-to-talk
-- [ ] Hold-to-talk button that works with mouse and touch, plus holding the Space bar. The Space shortcut is
-  off while the text box has focus.
-- [ ] Press sends `activity_start` and release sends `activity_end`. Pressing while the model is speaking
-  interrupts it.
-- [ ] Switching between hands-free and push-to-talk reconnects and keeps the conversation
+- [x] Hold-to-talk button that works with mouse and touch (pointer capture, no long-press menu), plus holding
+  Space. The Space shortcut is off while typing in a text field, and losing window focus releases it.
+- [x] Press sends `activity_start`. Release keeps streaming for 300 ms, so the last word isn't cut off, then
+  sends `activity_end`. Pressing while the model is speaking clears playback at once and drops the rest of
+  that answer.
+- [x] A Hands-free / Push to talk toggle in the voice bar, remembered in `localStorage`. Switching reconnects,
+  passing the conversation so far: the seeded text history plus the session's finished voice turns, which
+  the hook keeps.
 
 **Done when:** push-to-talk works with mouse, touch and keyboard, and switching modes keeps the conversation.
+
+**Results (2026-10-09), headless Chrome:**
+- Holding Space while asking, then releasing, got an answer. Audio started about 1.5 s after release.
+- Pressing the on-screen button during the answer stopped playback within 100 ms, and Gemini confirmed with
+  `interrupted` about 0.1 s after `activity_start`. The second question was answered.
+- Switching to hands-free reconnected with 4 history turns and answered a follow-up question.
+- At 390 px phone width, the controls wrap onto two rows with no horizontal scroll.
 
 ### Phase 4: Chat integration
 - [ ] Transcripts become chat messages, so voice and text share one conversation
