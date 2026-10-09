@@ -16,6 +16,9 @@ sentence-transformers==6.1.0
 pymilvus==3.0.2
 milvus-lite==3.2.1
 
+# Voice (Gemini Live API)
+google-genai==2.29.0
+
 # Document loading
 pypdf==6.19.0
 
