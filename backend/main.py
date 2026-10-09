@@ -2,7 +2,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from urllib.parse import urlparse
+
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -10,6 +12,7 @@ from pydantic import BaseModel
 
 from backend.config import get_settings
 from backend.ingest import ingest
+from backend.live import LiveBridge
 from backend.rag import RAGChain
 
 
@@ -72,6 +75,32 @@ async def chat(req: ChatRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def origin_allowed(ws: WebSocket) -> bool:
+    """CORS doesn't cover WebSockets: only accept same-host pages, configured origins and non-browser clients."""
+    origin = ws.headers.get("origin")
+    if not origin:
+        return True
+    return urlparse(origin).netloc == ws.headers.get("host") or origin in origins
+
+
+@app.websocket("/live")
+async def live(ws: WebSocket, answer: str | None = None, talk: str | None = None):
+    settings = get_settings()
+    answer = answer or settings.live_answer_mode
+    talk = talk or settings.live_talk_mode
+    if not origin_allowed(ws):
+        await ws.close(code=1008, reason="Origin not allowed")
+        return
+    await ws.accept()
+    if answer not in ("agent", "rag") or talk not in ("vad", "ptt"):
+        await ws.close(code=1008, reason="answer must be agent|rag and talk must be vad|ptt")
+        return
+    if not settings.gemini_api_key:
+        await ws.close(code=1011, reason="GEMINI_API_KEY is not set on the server")
+        return
+    await LiveBridge(ws, state["rag"], answer, talk).run()
 
 
 @app.post("/ingest")

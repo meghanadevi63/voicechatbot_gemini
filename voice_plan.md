@@ -109,8 +109,9 @@ Query string: `answer=agent|rag`, `talk=vad|ptt`.
 | Browser → server | `{"type":"end"}` | End the session |
 | Server → browser | binary | Model audio, PCM16 24 kHz mono |
 | Server → browser | `{"type":"ready"}` | Gemini session is open |
-| Server → browser | `{"type":"input_transcript","text","final"}` | What the user said |
-| Server → browser | `{"type":"output_transcript","text"}` | What the model is saying |
+| Browser → server | `{"type":"audio_stream_end"}` | Hands-free only: mic muted mid-sentence, so Gemini ends the turn without waiting for silence |
+| Server → browser | `{"type":"input_transcript","text"}` | A new piece of what the user said; the browser joins the pieces |
+| Server → browser | `{"type":"output_transcript","text"}` | A new piece of what the model is saying |
 | Server → browser | `{"type":"tool_call","name"}` | A search is running (UI shows "Searching…") |
 | Server → browser | `{"type":"sources","sources":[...]}` | Excerpts for the current answer |
 | Server → browser | `{"type":"interrupted"}` | Clear queued audio now |
@@ -177,18 +178,40 @@ What we learned:
 - **Every audio event had one part on 3.1.** The bridge still handles several parts per event.
 
 ### Phase 1: Backend bridge
-- [ ] `backend/config.py`, `.env.example`, `requirements.txt`: Gemini settings and `google-genai`
-- [ ] `backend/rag.py`: move retrieval into a shared `retrieve(query)` function. `answer()` stays unchanged.
-- [ ] `backend/live.py`, a `LiveBridge` class that:
+- [x] `backend/config.py`, `.env.example`, `requirements.txt`: Gemini settings and `google-genai`
+- [x] `backend/rag.py`: add a shared `retrieve(query)` and `to_sources(docs)`. `answer()` behaves as before.
+- [x] `backend/live.py`, a `LiveBridge` class that:
   - builds the session settings for each answer and talk mode
   - forwards audio both ways in two loops
-  - runs the tools in a worker thread
+  - runs the tools as tasks, with the blocking work in a worker thread
   - keeps the session's conversation history
   - translates Gemini events into the protocol above
-- [ ] `backend/main.py`: add the `@app.websocket("/live")` route
-- [ ] A test script that plays WAV files over `/live`
+- [x] `backend/main.py`: add the `@app.websocket("/live")` route. It checks the `Origin` header, because CORS
+  doesn't cover WebSockets: same-host pages, `CORS_ORIGINS` and non-browser clients are allowed.
+- [x] Test script [scripts/live_ws_test.py](scripts/live_ws_test.py) plays WAV files over `/live`, with or
+  without seeded history
 
 **Done when:** all four combinations of answer mode and talk mode work from the test script.
+
+**Results (2026-10-09):** all four combinations passed. Each run had 2 questions and 2 seeded history turns,
+and every turn returned audio, transcripts, a tool call and 4 sources. Audio started 1.8 to 4.2 s after the
+user stopped speaking. Tools took 0.03 to 0.09 s for a search and 1.2 to 2.3 s for the RAG chain.
+
+What we learned:
+- **Seeding history needs `history_config`.** Sending earlier turns with `send_client_content(turn_complete=False)`
+  left an open user turn, and Gemini then took 8 to 31 s to respond (push-to-talk sometimes never responded).
+  The fix is `history_config.initial_history_in_client_content=True` with history sent as
+  `turn_complete=True`. It's set only when there is history, because otherwise the server waits for it.
+- **Gemini's preview service is sometimes unstable.** For about 5 minutes, sessions failed with
+  `1011 Internal error` or never answered a turn. The same code passed before and after. Phase 5 must handle
+  this.
+- **Problem in the existing text chat (not voice), now fixed:** when the history named the book ("Atomic Habits
+  by James Clear"), the Groq router added that to the search query (for example, "What is the habit loop in
+  Atomic Habits by James Clear?"). Retrieval then returned front-matter pages (26, 6) instead of the relevant
+  ones (45, 50, 62), and the answer got worse. Relay mode inherited this. The fix: the router prompt now uses
+  history only to resolve references such as "it" or "the second one", copies standalone questions unchanged,
+  and never adds titles or authors. Checked on 3 standalone questions and 3 follow-ups: the standalone
+  questions match their no-history retrieval, and the follow-ups still resolve correctly.
 
 ### Phase 2: Browser audio with hands-free
 - [ ] Mic capture: an AudioWorklet that records with echo cancellation and noise suppression on, converts to
@@ -220,6 +243,8 @@ What we learned:
 
 ### Phase 5: Robustness
 - [ ] Session limits: on `GoAway`, reconnect with the resumption handle; turn on context compression
+- [ ] Gemini errors (`1011 Internal error`, a turn that never gets an answer): reconnect once with the
+  resumption handle, add a turn timeout, and show "Voice service hiccup, reconnecting…" in the UI
 - [ ] Clear errors in the UI: mic permission denied, no microphone, backend down, Gemini errors
 - [ ] Close the WebSocket when the tab closes or the component unmounts
 - [ ] Log for each turn:

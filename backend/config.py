@@ -21,6 +21,15 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
     top_k: int = 4
 
+    # Voice (Gemini Live API)
+    gemini_api_key: str = ""
+    live_model: str = "gemini-3.1-flash-live-preview"
+    live_voice: str = "Kore"
+    # agent: Gemini searches the docs and answers; rag: Gemini reads the answer from the RAG chain
+    live_answer_mode: str = "agent"
+    # vad: hands-free (Gemini detects end of speech); ptt: push-to-talk
+    live_talk_mode: str = "vad"
+
     # Comma-separated origins allowed to call the API directly from a browser.
     # Only needed when the frontend is served from a different origin.
     cors_origins: str = "https://localhost:5174,https://127.0.0.1:5174"

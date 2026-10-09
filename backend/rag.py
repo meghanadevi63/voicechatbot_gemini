@@ -28,9 +28,12 @@ When unsure, choose "document_query".
 If the intent is "small_talk", write a warm, natural reply of one or two short sentences in `reply`.
 Do not state any facts or answer questions. You may offer to help with questions about the documents.
 
-If the intent is "document_query", write a standalone search query in `search_query`: rewrite the
-message using the conversation history so it makes sense on its own (resolve "it", "that", "the second
-one", etc.) and keep the key terms. Leave `reply` empty."""
+If the intent is "document_query", write a standalone search query in `search_query`. Use the conversation
+history only to resolve references the message can't be understood without ("it", "that", "the second one",
+"tell me more"). If the message already makes sense on its own, copy it unchanged. Never add a document
+title, book title, author name or other context the user didn't ask about: every search already runs over
+the user's documents, and those extra words pull in the wrong passages. Keep the key terms. Leave `reply`
+empty."""
 
 SYSTEM_PROMPT = """You are a friendly voice assistant that answers questions using the document excerpts provided below.
 
@@ -68,6 +71,17 @@ def format_docs(docs: list[Document]) -> str:
         f"[{d.metadata.get('source')} p.{d.metadata.get('page')}]\n{d.page_content}"
         for d in docs
     )
+
+
+def to_sources(docs: list[Document]) -> list[dict]:
+    return [
+        {
+            "source": d.metadata.get("source"),
+            "page": d.metadata.get("page"),
+            "content": d.page_content,
+        }
+        for d in docs
+    ]
 
 
 def to_messages(history: list[dict]) -> list:
@@ -111,6 +125,9 @@ class RAGChain:
             search_kwargs={"k": get_settings().top_k}
         )
 
+    def retrieve(self, query: str) -> list[Document]:
+        return self.retriever.invoke(query)
+
     def route(self, question: str, messages: list) -> Route:
         try:
             return self.router.invoke({"history": messages, "question": question})
@@ -127,7 +144,7 @@ class RAGChain:
         if route.intent == "small_talk" and route.reply.strip():
             return {"answer": route.reply.strip(), "sources": []}
 
-        docs = self.retriever.invoke(route.search_query.strip() or question)
+        docs = self.retrieve(route.search_query.strip() or question)
         answer = self.chain.invoke(
             {
                 "context": format_docs(docs),
@@ -135,12 +152,4 @@ class RAGChain:
                 "question": question,
             }
         )
-        sources = [
-            {
-                "source": d.metadata.get("source"),
-                "page": d.metadata.get("page"),
-                "content": d.page_content,
-            }
-            for d in docs
-        ]
-        return {"answer": answer, "sources": sources}
+        return {"answer": answer, "sources": to_sources(docs)}
