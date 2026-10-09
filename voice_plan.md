@@ -214,14 +214,36 @@ What we learned:
   questions match their no-history retrieval, and the follow-ups still resolve correctly.
 
 ### Phase 2: Browser audio with hands-free
-- [ ] Mic capture: an AudioWorklet that records with echo cancellation and noise suppression on, converts to
-  16 kHz PCM16, and sends about 40 ms per frame
-- [ ] Playback: an AudioWorklet that plays 24 kHz audio from a queue and can clear it instantly
-- [ ] `useVoiceSession` hook that manages the WebSocket and the UI states
-- [ ] Mic button in the Composer, plus the voice bar with level meter, Mute and End
-- [ ] `vite.config.js`: proxy `/live` with `ws: true`
+- [x] Mic capture: [capture-worklet.js](frontend/src/voice/capture-worklet.js) records with echo
+  cancellation, noise suppression and auto gain on, downsamples to 16 kHz PCM16 by averaging windows, and
+  sends 40 ms frames with a loudness level
+- [x] Playback: [playback-worklet.js](frontend/src/voice/playback-worklet.js) queues 24 kHz audio, resamples
+  it to the context rate by linear interpolation, clears the queue on `interrupted`, and reports when it
+  starts and stops playing
+- [x] [useVoiceSession.js](frontend/src/voice/useVoiceSession.js) manages the mic, the audio context and the
+  WebSocket, and works out the UI state. It sends the text chat as history, so voice continues the
+  conversation.
+- [x] Mic button in the Composer, plus [VoiceBar.jsx](frontend/src/components/VoiceBar.jsx) with level meter,
+  state label, live captions, Mute and End
+- [x] `vite.config.js`: proxy `/live` with `ws: true`. The worklets are never inlined as `data:` URLs in builds.
 
 **Done when:** a hands-free conversation works in the browser and talking over the model stops it.
+
+**Results so far (2026-10-09):** a headless Chrome test (fake mic playing recorded questions, dev server
+proxying to a test backend) held a 4-turn hands-free conversation. The state went Listening, then Searching,
+then Speaking, then back to Listening each turn, with live captions and End closing cleanly. The audio the
+browser sends was checked: 40 ms frames, clean 16 kHz speech, 0.03% clipping.
+
+Interruption, tested twice: the test asked a question, then spoke a second one 2 s after "Speaking…"
+appeared. Gemini sent `interrupted`, playback stopped **0.3 to 0.4 s** after the user started talking, the
+bar went back to "Listening…", and the second question was searched and answered. Audio started about 1 s
+after the end of the first question.
+
+Gemini outage: from 18:57 to about 19:05 every audio session failed with `1011 Internal error`, while text
+sessions kept working. This confirms Phase 5 needs reconnect and retry. Speaker echo in hands-free mode
+couldn't be tested headless and needs a manual check on real hardware.
+
+Captions stay in the voice bar for now. Phase 4 moves them into the chat list.
 
 ### Phase 3: Push-to-talk
 - [ ] Hold-to-talk button that works with mouse and touch, plus holding the Space bar. The Space shortcut is

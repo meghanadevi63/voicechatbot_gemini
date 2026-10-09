@@ -4,7 +4,9 @@ import ChatMessage from "./components/ChatMessage.jsx";
 import Composer from "./components/Composer.jsx";
 import EmptyState from "./components/EmptyState.jsx";
 import Sidebar from "./components/Sidebar.jsx";
+import VoiceBar from "./components/VoiceBar.jsx";
 import { MenuIcon } from "./components/icons.jsx";
+import useVoiceSession from "./voice/useVoiceSession.js";
 
 const STORAGE_KEY = "docs-assistant-messages";
 const HEALTH_INTERVAL_MS = 15000;
@@ -34,6 +36,7 @@ export default function App() {
   const [ingest, setIngest] = useState({ status: "idle" });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef(null);
+  const voice = useVoiceSession();
 
   useEffect(() => {
     try {
@@ -127,7 +130,13 @@ export default function App() {
           </div>
         </div>
 
-        <Composer onSend={ask} disabled={pending} />
+        <VoiceBar voice={voice} />
+        <Composer
+          onSend={ask}
+          disabled={pending}
+          onVoice={() => voice.start({ history: toHistory(messages) })}
+          voiceActive={voice.state !== "idle"}
+        />
       </main>
     </div>
   );

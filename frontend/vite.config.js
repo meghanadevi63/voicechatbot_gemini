@@ -12,11 +12,19 @@ export default defineConfig({
   // Self-signed HTTPS so the page is a secure context (needed for microphone
   // access) when opened from other machines on the network.
   plugins: [react(), basicSsl()],
+  build: {
+    // Keep the voice AudioWorklets as real files: some browsers refuse data: URLs in addModule()
+    assetsInlineLimit: (file) => (file.includes("-worklet.") ? false : undefined),
+  },
   server: {
     port: 5174,
     strictPort: true,
     // Listen on all interfaces so other machines on the network can open it
     host: true,
-    proxy: Object.fromEntries(apiPaths.map((path) => [path, backend])),
+    proxy: {
+      ...Object.fromEntries(apiPaths.map((path) => [path, backend])),
+      // Voice chat WebSocket
+      "/live": { target: backend, ws: true },
+    },
   },
 });

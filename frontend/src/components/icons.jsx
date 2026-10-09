@@ -28,6 +28,20 @@ export const SendIcon = () => (
   </svg>
 );
 
+export const MicIcon = () => (
+  <svg {...base}>
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+  </svg>
+);
+
+export const MicOffIcon = () => (
+  <svg {...base}>
+    <path d="M15 9.3V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 5 2.2" />
+    <path d="M19 11a7 7 0 0 1-1.1 3.8M5 11a7 7 0 0 0 11.2 5.6M12 18v3M3 3l18 18" />
+  </svg>
+);
+
 export const PlusIcon = () => (
   <svg {...base}>
     <path d="M12 5v14M5 12h14" />

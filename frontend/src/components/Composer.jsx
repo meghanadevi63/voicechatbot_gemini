@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { SendIcon } from "./icons.jsx";
+import { MicIcon, SendIcon } from "./icons.jsx";
 
 const MAX_HEIGHT = 200;
 
-export default function Composer({ onSend, disabled }) {
+export default function Composer({ onSend, disabled, onVoice, voiceActive }) {
   const [text, setText] = useState("");
   const ref = useRef(null);
 
@@ -47,11 +47,24 @@ export default function Composer({ onSend, disabled }) {
             }
           }}
         />
+        <button
+          className="icon-btn mic-btn"
+          type="button"
+          onClick={onVoice}
+          disabled={voiceActive}
+          aria-label="Start voice chat"
+          title="Talk to the assistant"
+        >
+          <MicIcon />
+        </button>
         <button className="send-btn" type="submit" disabled={disabled || !text.trim()} aria-label="Send">
           <SendIcon />
         </button>
       </form>
-      <p className="hint">Answers come only from your indexed documents. Enter to send, Shift+Enter for a new line.</p>
+      <p className="hint">
+        Answers come only from your indexed documents. Enter to send, Shift+Enter for a new line, or use the mic to
+        talk.
+      </p>
     </div>
   );
 }
