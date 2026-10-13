@@ -1,6 +1,6 @@
 # RAG Chatbot (React + FastAPI + LangChain + Milvus Lite + Gemini Live voice)
 
-Ask questions about the PDFs in `docs/`, by typing or by voice. Typed answers come from Groq, grounded in chunks retrieved from a local Milvus Lite database (`data/milvus.db`, no Docker or server needed). Voice uses the Gemini Live API (`gemini-3.1-flash-live-preview`): answers are spoken and also shown in the chat with their sources.
+Ask questions about the PDFs in `docs/`, by typing or by voice, in any language Gemini supports. Typed answers are written by Gemini Flash Lite (Groq as the fallback), grounded in chunks retrieved from a local Milvus Lite database (`data/milvus.db`, no Docker or server needed). A Groq router decides whether a message needs a search and writes the search query. Voice uses the Gemini Live API (`gemini-3.1-flash-live-preview`): answers are spoken and also shown in the chat with their sources.
 
 ```
 React (frontend/) ──HTTP /chat──────▶ FastAPI (backend/main.py) ──▶ RAG chain (backend/rag.py) ──▶ Groq LLM
@@ -23,7 +23,7 @@ uv venv --python 3.11 .venv
 source .venv/bin/activate
 uv pip install -r requirements.txt --index-strategy unsafe-best-match
 
-cp .env.example .env    # then set GROQ_API_KEY, and GEMINI_API_KEY for voice
+cp .env.example .env    # then set GROQ_API_KEY and GEMINI_API_KEY
 ```
 
 Frontend (Node 20+):
@@ -83,6 +83,18 @@ Notes:
 - `gemini-3.1-flash-live-preview` is a preview model. It occasionally fails with `1011 Internal error`, or is slow, for a few minutes at a time. The voice bar then shows the error. Start again once it recovers.
 - `scripts/live_spike.py` and `scripts/live_ws_test.py` test the Live model and the `/live` endpoint from Python (see their docstrings).
 
+## Languages
+
+Type or speak in your own language; the question and the answer are shown (and spoken) in that language. There is no language setting.
+
+- The documents stay in English. Every search query is written in English (by the router for typed chat, by Gemini in voice), so nothing is re-indexed. Sources are shown in English, labelled "(English)" under a non-English answer.
+- The backend detects each message's language. The frontend keeps the last clear one as the conversation's language (`localStorage` key `docs-assistant-last-language`, kept by New chat). It is sent as a hint with typed questions, dictation and voice, and decides the reply language for short messages like "ok thanks".
+- Messages get `lang` and `dir="auto"`, so right-to-left scripts lay out correctly. Noto fonts load from Google Fonts only for scripts the system lacks.
+- Interface labels stay in English.
+- Known limits: dictation (Flash Lite) sometimes mishears words in Tamil, Chinese and Hindi. A very first dictated message has no hint; if it comes back romanized it is transcribed again once. In hands-free mode, Gemini Live sometimes shows the user's words romanized.
+
+Plan, coverage tiers and test results: [MULTILANGUAGE_PLAN.md](MULTILANGUAGE_PLAN.md), [MULTILANGUAGE_PRECHECK_RESULTS.md](MULTILANGUAGE_PRECHECK_RESULTS.md).
+
 Milvus Lite allows only one process to open the database. While the backend is running, ingest through `POST /ingest`. Use `python -m backend.ingest` only when the backend is stopped.
 
 ## API
@@ -90,10 +102,10 @@ Milvus Lite allows only one process to open the database. While the backend is r
 | Method | Path      | Body                                  | Returns                         |
 |--------|-----------|---------------------------------------|---------------------------------|
 | GET    | `/health` | –                                     | `{"status": "ok"}`              |
-| POST   | `/chat`   | `{"question": "...", "history": [...]}` | `{"answer": "...", "sources": [...]}` |
+| POST   | `/chat`   | `{"question": "...", "history": [...], "language": "te"}` (`language` optional) | `{"answer": "...", "sources": [...], "language": "te"}` |
 | POST   | `/ingest` | –                                     | `{"files", "pages", "chunks"}`  |
-| POST   | `/transcribe` | raw 16 kHz mono PCM16 audio (≤ 60 s) | `{"text": "..."}`             |
-| WS     | `/live?answer=agent\|rag` | see [voice_plan.md](voice_plan.md#websocket-protocol-live) | audio + JSON events |
+| POST   | `/transcribe?lang=te` (`lang` optional) | raw 16 kHz mono PCM16 audio (≤ 60 s) | `{"text": "...", "language": "te"}` |
+| WS     | `/live?answer=agent\|rag&lang=te` | see [voice_plan.md](voice_plan.md#websocket-protocol-live) | audio + JSON events |
 
 ## Configuration (`.env`)
 
@@ -102,13 +114,15 @@ Milvus Lite allows only one process to open the database. While the backend is r
 | `GROQ_API_KEY`    | – (required)                             |
 | `GROQ_MODEL`      | `openai/gpt-oss-20b`                     |
 | `ROUTER_MODEL`    | `openai/gpt-oss-20b`                     |
+| `ANSWER_PROVIDER` | `gemini` (or `groq`; Groq is also the fallback) |
+| `ANSWER_MODEL`    | `gemini-3.5-flash-lite` (also translates voice search queries) |
 | `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` |
 | `MILVUS_DB_PATH`  | `./data/milvus.db`                       |
 | `COLLECTION_NAME` | `docs_rag`                               |
 | `DOCS_DIR`        | `./docs`                                 |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` / `TOP_K` | `1000` / `150` / `4` |
 | `CORS_ORIGINS`    | `https://localhost:5174,https://127.0.0.1:5174` |
-| `GEMINI_API_KEY`  | – (required for voice)                   |
+| `GEMINI_API_KEY`  | – (required: answers, dictation and voice) |
 | `LIVE_MODEL`      | `gemini-3.1-flash-live-preview`          |
 | `LIVE_VOICE`      | `Kore`                                   |
 | `LIVE_ANSWER_MODE` | `agent` (only for clients that don't pass `answer`) |

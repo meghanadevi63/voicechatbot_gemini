@@ -28,11 +28,17 @@ async function request(path, options = {}) {
 
 export const checkHealth = () => request("/health");
 
-export const sendChat = (question, history) =>
-  request("/chat", { method: "POST", body: JSON.stringify({ question, history }) });
+// language: the conversation's language, used when the question's own is unclear. Returns
+// {answer, sources, language}, language being the question's detected language (or "und").
+export const sendChat = (question, history, language) =>
+  request("/chat", { method: "POST", body: JSON.stringify({ question, history, language }) });
 
 export const ingestDocs = () => request("/ingest", { method: "POST" });
 
-// One dictated clip: 16 kHz mono PCM16 (ArrayBuffer) -> {text}
-export const transcribe = (pcm) =>
-  request("/transcribe", { method: "POST", body: pcm, headers: { "Content-Type": "application/octet-stream" } });
+// One dictated clip: 16 kHz mono PCM16 (ArrayBuffer) -> {text, language}. lang: the language hint, if any.
+export const transcribe = (pcm, lang) =>
+  request(`/transcribe${lang ? `?lang=${encodeURIComponent(lang)}` : ""}`, {
+    method: "POST",
+    body: pcm,
+    headers: { "Content-Type": "application/octet-stream" },
+  });

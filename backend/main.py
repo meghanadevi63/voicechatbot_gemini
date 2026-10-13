@@ -88,8 +88,9 @@ async def chat(req: ChatRequest):
 
 
 @app.post("/transcribe")
-async def transcribe_clip(request: Request):
-    """Body: raw 16 kHz mono PCM16 (one dictated clip). Returns {"text": ...}."""
+async def transcribe_clip(request: Request, lang: str | None = None):
+    """Body: raw 16 kHz mono PCM16 (one dictated clip). lang: the conversation's language (BCP-47), as a hint.
+    Returns {"text": ..., "language": ...}."""
     pcm = await request.body()
     if not pcm:
         raise HTTPException(status_code=400, detail="No audio")
@@ -98,7 +99,7 @@ async def transcribe_clip(request: Request):
     if not get_settings().gemini_api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not set on the server")
     try:
-        return {"text": await transcribe(pcm[: len(pcm) // 2 * 2])}
+        return await transcribe(pcm[: len(pcm) // 2 * 2], lang)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Transcription failed: {e}")
 
@@ -112,7 +113,7 @@ def origin_allowed(ws: WebSocket) -> bool:
 
 
 @app.websocket("/live")
-async def live(ws: WebSocket, answer: str | None = None, talk: str | None = None):
+async def live(ws: WebSocket, answer: str | None = None, talk: str | None = None, lang: str | None = None):
     settings = get_settings()
     answer = answer or settings.live_answer_mode
     talk = talk or settings.live_talk_mode
@@ -126,7 +127,7 @@ async def live(ws: WebSocket, answer: str | None = None, talk: str | None = None
     if not settings.gemini_api_key:
         await ws.close(code=1011, reason="GEMINI_API_KEY is not set on the server")
         return
-    await LiveBridge(ws, state["rag"], answer, talk).run()
+    await LiveBridge(ws, state["rag"], answer, talk, lang).run()
 
 
 @app.post("/ingest")

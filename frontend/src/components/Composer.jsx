@@ -6,15 +6,17 @@ import { LevelMeter } from "./VoiceBar.jsx";
 const MAX_HEIGHT = 200;
 
 /**
- * onSend(text, {dictated}): dictated is true when some of the text came from the mic
- * (the answer is then spoken as well). onHandsFree starts a hands-free conversation;
+ * onSend(text, {dictated, language}): dictated is true when some of the text came from the mic
+ * (the answer is then spoken as well); language is the last dictated clip's detected language.
+ * language: the conversation's language, the hint for dictation. onLanguage(lang) reports each clip's language. onHandsFree starts a hands-free conversation;
  * onDictateStart is called when dictation begins (e.g. to stop a spoken answer). Both mic buttons
  * are off during a hands-free conversation.
  */
-export default function Composer({ onSend, disabled, onHandsFree, onDictateStart, handsFreeActive }) {
+export default function Composer({ onSend, disabled, onHandsFree, onDictateStart, handsFreeActive, language, onLanguage }) {
   const [text, setTextState] = useState("");
   const textRef = useRef(""); // latest text, readable right after awaiting dictation
   const dictatedRef = useRef(false);
+  const dictatedLanguageRef = useRef(null);
   const [sending, setSending] = useState(false);
   const ref = useRef(null);
 
@@ -25,14 +27,16 @@ export default function Composer({ onSend, disabled, onHandsFree, onDictateStart
 
   // Each transcribed pause is appended to whatever is in the box (typed or dictated)
   const appendTranscript = useCallback(
-    (words) => {
+    (words, lang) => {
       const current = textRef.current;
       setText(current && !/\s$/.test(current) ? `${current} ${words}` : current + words);
       dictatedRef.current = true;
+      dictatedLanguageRef.current = lang;
+      onLanguage?.(lang);
     },
-    [setText]
+    [setText, onLanguage]
   );
-  const dictation = useDictation({ onText: appendTranscript });
+  const dictation = useDictation({ onText: appendTranscript, language });
   const dictating = dictation.recording || dictation.transcribing > 0;
 
   // Grow the textarea with its content, up to MAX_HEIGHT
@@ -56,9 +60,10 @@ export default function Composer({ onSend, disabled, onHandsFree, onDictateStart
     }
     const question = textRef.current.trim();
     if (!question) return;
-    onSend(question, { dictated: dictatedRef.current });
+    onSend(question, { dictated: dictatedRef.current, language: dictatedLanguageRef.current });
     setText("");
     dictatedRef.current = false;
+    dictatedLanguageRef.current = null;
   };
 
   const toggleDictation = () => {
@@ -92,6 +97,7 @@ export default function Composer({ onSend, disabled, onHandsFree, onDictateStart
         <textarea
           ref={ref}
           rows={1}
+          dir="auto"
           value={text}
           placeholder={dictation.recording ? "Listening…" : "Ask a question about your documents"}
           onChange={(e) => {

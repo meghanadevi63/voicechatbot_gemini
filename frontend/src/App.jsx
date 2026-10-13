@@ -6,6 +6,7 @@ import EmptyState from "./components/EmptyState.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import VoiceBar from "./components/VoiceBar.jsx";
 import { MenuIcon } from "./components/icons.jsx";
+import { isKnown, loadLastLanguage, saveLastLanguage } from "./language.js";
 import useVoiceSession from "./voice/useVoiceSession.js";
 
 const STORAGE_KEY = "docs-assistant-messages";
@@ -48,16 +49,30 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef(null);
   const [voiceSettings, setVoiceSettings] = useState(loadVoiceSettings);
+  // The conversation's language: the last clear one detected (chat, dictation or voice). It is the hint for
+  // dictation, voice and short messages, and New chat keeps it.
+  const [language, setLanguage] = useState(loadLastLanguage);
+
+  const noteLanguage = useCallback((lang) => {
+    if (!isKnown(lang)) return;
+    setLanguage(lang);
+    saveLastLanguage(lang);
+  }, []);
 
   // A finished voice turn becomes ordinary chat messages (marked as voice)
-  const addVoiceTurn = useCallback(({ user, assistant, sources, interrupted }) => {
-    const turn = [];
-    if (user) turn.push({ id: newId(), role: "user", content: user, voice: true });
-    if (assistant) {
-      turn.push({ id: newId(), role: "assistant", content: assistant, sources, interrupted, voice: true });
-    }
-    if (turn.length) setMessages((prev) => [...prev, ...turn]);
-  }, []);
+  const addVoiceTurn = useCallback(
+    ({ user, assistant, sources, interrupted, language: lang }) => {
+      const turn = [];
+      const tag = isKnown(lang) ? { lang } : {};
+      if (user) turn.push({ id: newId(), role: "user", content: user, voice: true, ...tag });
+      if (assistant) {
+        turn.push({ id: newId(), role: "assistant", content: assistant, sources, interrupted, voice: true, ...tag });
+      }
+      if (turn.length) setMessages((prev) => [...prev, ...turn]);
+      noteLanguage(lang);
+    },
+    [noteLanguage]
+  );
 
   const voice = useVoiceSession({ onTurn: addVoiceTurn });
   const { start: startVoice, stop: stopVoice, switchAnswer } = voice;
@@ -72,9 +87,9 @@ export default function App() {
       } catch {
         // Storage unavailable: the choice just isn't remembered
       }
-      switchAnswer(next.answer, toHistory(messages)); // reconnects a hands-free conversation
+      switchAnswer(next.answer, toHistory(messages), language); // reconnects a hands-free conversation
     },
-    [voiceSettings, switchAnswer, messages]
+    [voiceSettings, switchAnswer, messages, language]
   );
 
   useEffect(() => {
@@ -104,20 +119,30 @@ export default function App() {
   }, [messages, pending, voice.caption]);
 
   const ask = useCallback(
-    async (question, { dictated = false } = {}) => {
+    async (question, { dictated = false, language: dictatedLanguage = null } = {}) => {
       const history = toHistory(messages);
       if (dictated) {
         // Dictated question: Gemini answers out loud (in the chosen answer mode); the answer
         // arrives as a voice turn through addVoiceTurn
-        setMessages((prev) => [...prev, { id: newId(), role: "user", content: question, voice: true }]);
-        startVoice({ answer: voiceSettings.answer, history, mic: false, text: question });
+        const lang = isKnown(dictatedLanguage) ? dictatedLanguage : language;
+        setMessages((prev) => [
+          ...prev,
+          { id: newId(), role: "user", content: question, voice: true, ...(isKnown(lang) ? { lang } : {}) },
+        ]);
+        startVoice({ answer: voiceSettings.answer, history, mic: false, text: question, lang });
         return;
       }
-      setMessages((prev) => [...prev, { id: newId(), role: "user", content: question }]);
+      const questionId = newId();
+      setMessages((prev) => [...prev, { id: questionId, role: "user", content: question }]);
       setPending(true);
       try {
-        const { answer, sources } = await sendChat(question, history);
-        setMessages((prev) => [...prev, { id: newId(), role: "assistant", content: answer, sources }]);
+        const { answer, sources, language: detected } = await sendChat(question, history, language);
+        const tag = isKnown(detected) ? { lang: detected } : {};
+        setMessages((prev) => [
+          ...prev.map((m) => (m.id === questionId ? { ...m, ...tag } : m)),
+          { id: newId(), role: "assistant", content: answer, sources, ...tag },
+        ]);
+        noteLanguage(detected);
       } catch (e) {
         setMessages((prev) => [
           ...prev,
@@ -127,7 +152,7 @@ export default function App() {
         setPending(false);
       }
     },
-    [messages, startVoice, voiceSettings.answer]
+    [messages, startVoice, voiceSettings.answer, language, noteLanguage]
   );
 
   const reingest = useCallback(async () => {
@@ -180,7 +205,9 @@ export default function App() {
             {/* The voice turn in progress, streamed live until it completes */}
             {caption.user && <ChatMessage message={{ role: "user", content: caption.user, voice: true, live: true }} />}
             {caption.assistant && (
-              <ChatMessage message={{ role: "assistant", content: caption.assistant, voice: true, live: true }} />
+              <ChatMessage
+                message={{ role: "assistant", content: caption.assistant, voice: true, live: true, lang: language }}
+              />
             )}
             {pending && <ChatMessage message={{ role: "assistant", typing: true }} />}
             <div ref={bottomRef} />
@@ -191,9 +218,13 @@ export default function App() {
         <Composer
           onSend={ask}
           disabled={pending}
-          onHandsFree={() => startVoice({ answer: voiceSettings.answer, history: toHistory(messages), mic: true })}
+          onHandsFree={() =>
+            startVoice({ answer: voiceSettings.answer, history: toHistory(messages), mic: true, lang: language })
+          }
           onDictateStart={() => !voice.withMic && stopVoice()}
           handsFreeActive={handsFreeActive}
+          language={language}
+          onLanguage={noteLanguage}
         />
       </main>
     </div>

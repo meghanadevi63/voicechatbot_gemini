@@ -19,7 +19,8 @@ from google import genai
 from google.genai import types
 
 from backend.config import get_settings
-from backend.rag import RAGChain, format_docs, to_sources
+from backend.language import is_known
+from backend.rag import RAGChain, format_docs, to_english_query, to_sources
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +35,22 @@ AGENT_PROMPT = """You are a friendly voice assistant that answers questions abou
 
 Rules:
 - For any question or request for information, call search_documents first with a short standalone search
-  query (use the conversation to resolve follow-ups like "tell me more" or "what about the second one").
+  query IN ENGLISH, whatever language the user speaks (the documents are in English). Use the conversation to
+  resolve follow-ups like "tell me more" or "what about the second one".
 - Answer only from what search_documents returns. Do not use outside knowledge or guess.
-- If the results don't contain the answer, say so plainly, for example: "I couldn't find that in the documents."
+- If the results don't contain the answer, say plainly that you couldn't find it in the documents.
   If they contain part of the answer, give that part and say what is missing.
 - For purely social messages (greetings, thanks, goodbyes) reply briefly and warmly without searching.
 - Speak in natural sentences: no lists, markdown or URLs. Keep it to two to four sentences unless the user
   asks for more detail.
-- Don't mention "excerpts", "search results" or the tool. If it helps, name the source document naturally."""
+- Don't mention "excerpts", "search results" or the tool. If it helps, name the source document naturally.
+- Answer in the language the user is speaking, in that language's usual script, even though the documents
+  are in English. Don't add English translations of terms in parentheses."""
+
+# Added to the agent prompt when the conversation's language is known
+LANGUAGE_HINT = """
+
+The user usually speaks the language with BCP-47 code {language}; answer in the language they speak."""
 
 RELAY_PROMPT = """You are the voice of a document assistant. You never answer anything yourself.
 
@@ -56,7 +65,13 @@ SEARCH_TOOL = {
     "description": "Search the user's documents and return the most relevant excerpts.",
     "parameters": {
         "type": "OBJECT",
-        "properties": {"query": {"type": "STRING", "description": "Standalone search query"}},
+        "properties": {
+            "query": {"type": "STRING", "description": "Standalone search query, in English"},
+            "language": {
+                "type": "STRING",
+                "description": 'BCP-47 code of the language the user is speaking ("en", "hi", "te", ...)',
+            },
+        },
         "required": ["query"],
     },
 }
@@ -76,11 +91,13 @@ RELAY_TOOL = {
 
 def similarity(a: str, b: str) -> float:
     """Word-level match between two texts, 0 to 1 (used to log how faithfully relay mode reads)."""
-    words = lambda s: re.findall(r"[a-z0-9']+", s.lower())
+    words = lambda s: re.findall(r"[\w']+", s.lower())
     return round(SequenceMatcher(None, words(a), words(b)).ratio(), 3)
 
 
-def live_config(answer_mode: AnswerMode, talk_mode: TalkMode, has_history: bool) -> types.LiveConnectConfig:
+def live_config(
+    answer_mode: AnswerMode, talk_mode: TalkMode, has_history: bool, language: str | None = None
+) -> types.LiveConnectConfig:
     settings = get_settings()
     is_31 = "3.1" in settings.live_model
     tool = dict(RELAY_TOOL if answer_mode == "rag" else SEARCH_TOOL)
@@ -91,7 +108,10 @@ def live_config(answer_mode: AnswerMode, talk_mode: TalkMode, has_history: bool)
 
     config = dict(
         response_modalities=["AUDIO"],
-        system_instruction=RELAY_PROMPT if answer_mode == "rag" else AGENT_PROMPT,
+        # Relay mode reads RAGChain's answer, which gets the language itself
+        system_instruction=RELAY_PROMPT
+        if answer_mode == "rag"
+        else AGENT_PROMPT + (LANGUAGE_HINT.format(language=language) if is_known(language) else ""),
         tools=[types.Tool(function_declarations=[tool])],
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
@@ -115,8 +135,12 @@ def live_config(answer_mode: AnswerMode, talk_mode: TalkMode, has_history: bool)
 
 
 class LiveBridge:
-    def __init__(self, ws: WebSocket, rag: RAGChain, answer_mode: AnswerMode, talk_mode: TalkMode):
+    def __init__(
+        self, ws: WebSocket, rag: RAGChain, answer_mode: AnswerMode, talk_mode: TalkMode, language: str | None = None
+    ):
         self.ws = ws
+        # The conversation's language (BCP-47), updated from each voice turn whose language is clear
+        self.language = language if is_known(language) else None
         self.rag = rag
         self.answer_mode = answer_mode
         self.talk_mode = talk_mode
@@ -156,13 +180,15 @@ class LiveBridge:
         try:
             async with client.aio.live.connect(
                 model=settings.live_model,
-                config=live_config(self.answer_mode, self.talk_mode, has_history=bool(self.history)),
+                config=live_config(
+                    self.answer_mode, self.talk_mode, has_history=bool(self.history), language=self.language
+                ),
             ) as session:
                 await self.seed_history(session)
                 await self.send_event("ready", answer=self.answer_mode, talk=self.talk_mode)
                 logger.info(
-                    "Live session started (model=%s answer=%s talk=%s, %d history turns)",
-                    settings.live_model, self.answer_mode, self.talk_mode, len(self.history),
+                    "Live session started (model=%s answer=%s talk=%s language=%s, %d history turns)",
+                    settings.live_model, self.answer_mode, self.talk_mode, self.language, len(self.history),
                 )
                 upstream = asyncio.create_task(self.browser_to_gemini(session))
                 downstream = asyncio.create_task(self.gemini_to_browser(session))
@@ -296,12 +322,16 @@ class LiveBridge:
         started = time.monotonic()
         try:
             if fc.name == "search_documents":
-                docs = await asyncio.to_thread(self.rag.retrieve, args.get("query", ""))
+                await self.set_language(args.get("language"))
+                # Gemini sometimes leaves the query in the user's language; the documents are English
+                query = await asyncio.to_thread(to_english_query, args.get("query", ""))
+                docs = await asyncio.to_thread(self.rag.retrieve, query)
                 response = {"result": format_docs(docs) or "No matching excerpts were found."}
                 sources = to_sources(docs)
             elif fc.name == "ask_knowledge_base":
                 question = args.get("question", "")
-                result = await asyncio.to_thread(self.rag.answer, question, list(self.history))
+                result = await asyncio.to_thread(self.rag.answer, question, list(self.history), self.language)
+                await self.set_language(result["language"])
                 self.history += [
                     {"role": "user", "content": question},
                     {"role": "assistant", "content": result["answer"]},
@@ -326,6 +356,13 @@ class LiveBridge:
             await self.send_event("rag_answer", text=response["answer"])
         if sources:
             await self.send_event("sources", sources=sources)
+
+    async def set_language(self, language: str | None):
+        """A voice turn's detected language: becomes the session's language and is sent to the browser."""
+        if not is_known(language):
+            return
+        self.language = language
+        await self.send_event("language", language=language)
 
     def log_turn(self, interrupted: bool):
         if self._turn_relay_answer:

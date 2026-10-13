@@ -22,12 +22,12 @@ function concat(chunks) {
 
 /**
  * Dictation: while recording, each stretch of speech (ended by a pause) is transcribed
- * by the backend and passed to onText, in order.
+ * by the backend and passed to onText(text, language), in order. language is the hint sent with each clip.
  *
  * recording: mic is on; transcribing: clips still waiting for text; levelRef: mic loudness.
  * stop() returns a promise that resolves once every clip has been transcribed.
  */
-export default function useDictation({ onText }) {
+export default function useDictation({ onText, language }) {
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(0);
   const [error, setError] = useState(null);
@@ -36,15 +36,17 @@ export default function useDictation({ onText }) {
   const queueRef = useRef(Promise.resolve());
   const onTextRef = useRef(onText);
   onTextRef.current = onText;
+  const languageRef = useRef(language);
+  languageRef.current = language;
 
   const sendClip = useCallback((chunks) => {
     const pcm = concat(chunks);
     setTranscribing((n) => n + 1);
-    const request = transcribe(pcm); // start now; results are still applied in order
+    const request = transcribe(pcm, languageRef.current); // start now; results are still applied in order
     request.catch(() => {}); // handled below, once its turn in the queue comes
     queueRef.current = queueRef.current
       .then(() => request)
-      .then(({ text }) => text && onTextRef.current(text))
+      .then(({ text, language }) => text && onTextRef.current(text, language))
       .catch((e) => setError(`Couldn't transcribe: ${e.message}`))
       .finally(() => setTranscribing((n) => n - 1));
   }, []);

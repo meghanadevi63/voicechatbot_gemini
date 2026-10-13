@@ -114,7 +114,8 @@ no longer uses it.
 
 ## WebSocket protocol (`/live`)
 
-Query string: `answer=agent|rag`, `talk=vad|ptt`.
+Query string: `answer=agent|rag`, `talk=vad|ptt`, and optionally `lang=<BCP-47 code>`, the conversation's
+language (see [MULTILANGUAGE_PLAN.md](MULTILANGUAGE_PLAN.md)).
 
 | Direction | Frame | Meaning |
 |---|---|---|
@@ -131,6 +132,7 @@ Query string: `answer=agent|rag`, `talk=vad|ptt`.
 | Server → browser | `{"type":"tool_call","name"}` | A search is running (UI shows "Searching…") |
 | Server → browser | `{"type":"sources","sources":[...]}` | Excerpts for the current answer |
 | Server → browser | `{"type":"rag_answer","text"}` | Relay mode only: the RAG answer Gemini is reading. The chat stores this text. |
+| Server → browser | `{"type":"language","language"}` | The current turn's detected language (BCP-47); the browser makes it the conversation's language |
 | Server → browser | `{"type":"interrupted"}` | Clear queued audio now |
 | Server → browser | `{"type":"turn_complete"}` | Model finished its turn |
 | Server → browser | `{"type":"reconnecting"}` | Reconnecting with a resumption handle |

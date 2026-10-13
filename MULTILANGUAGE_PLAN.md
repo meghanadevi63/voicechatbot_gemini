@@ -96,7 +96,7 @@ after asking first, and kept small, so they don't use up the API quotas the runn
     [results](MULTILANGUAGE_PRECHECK_RESULTS.md#languages-that-need-special-handling)
   - the follow-up items are added to M1 to M3 below
 
-### Phase M1: Backend, typed chat (built, test pending)
+### Phase M1: Backend, typed chat (built; small check done, full test pending)
 - [x] Router (`Route` in `rag.py`):
   - new field `language` (BCP-47 code of the latest message, or `und` when it's too short to tell)
   - `search_query` always in English
@@ -114,30 +114,41 @@ after asking first, and kept small, so they don't use up the API quotas the runn
 - [x] `POST /chat`:
   - accepts an optional `language` (the conversation's language)
   - returns the detected `language`, so the frontend can track the conversation language
+- [x] The router sees the conversation's language. Short acknowledgements ("ok thanks") get `und` and a reply
+  in the conversation's language. Without that rule the router called "ok thanks" English, even in a Telugu
+  conversation.
 - [x] Answer writer setting: `ANSWER_PROVIDER=groq|gemini` and `ANSWER_MODEL`. The default is Gemini Flash
   Lite, as decided on 2026-10-13. Groq is the fallback if Gemini fails.
 - [x] Log each question's language, its English query and its alternative query (`main.py` now configures
   app logging at INFO)
-- [ ] **Test** ([scripts/multilang_chat_test.py](scripts/multilang_chat_test.py)):
+- [x] Small check (2026-10-13, against a copy on port 8003):
+  - Telugu question: English query "What is a habit loop?", answer in Telugu, the right pages
+  - "ok thanks" in a Telugu conversation: reply in Telugu; "thank you" with no language known: English
+  - an English question in a Telugu conversation: English answer
+- [ ] **Full test** ([scripts/multilang_chat_test.py](scripts/multilang_chat_test.py)):
   - the M0b text check against the real `/chat`
   - targets: answer in the right language for at least 95% of Tier 2 questions, page overlap at least 0.8
   - English answers unchanged
   - blocked by API quotas: the first run used up Groq's daily token limit partway through (see Risks)
 
-### Phase M2: Language tracking and dictation
-- [ ] Frontend conversation language:
+### Phase M2: Language tracking and dictation (built, test pending)
+- [x] Frontend conversation language (`language` in `App.jsx`, helpers in `frontend/src/language.js`):
   - updated from `/chat`'s `language`, and from the language of voice turns (M3), when it's clear
   - saved with the chat in `localStorage`
   - also saved as the **last used language** (`docs-assistant-last-language`), which New chat keeps, so the
     next conversation starts with a hint
-- [ ] `POST /transcribe?lang=<code>`:
+  - it is the last clear language from `/chat`, a dictated clip or a voice turn. Each message keeps its own `lang`
+    with the chat.
+- [x] `POST /transcribe?lang=<code>` returns `{text, language}` (structured output, one call):
   - the prompt keeps the spoken language and script, and never translates
   - adds "The speaker is speaking <language>" when a language is known (the conversation language, or else the
     last used language)
-- [ ] First dictation with no language known at all (the user's very first message):
-  - transcribe without a hint, then detect the language
-  - if the text looks romanized or mixed-script, re-transcribe once with the detected language as the hint
-  - log these cases, so M5 can measure how often they go wrong
+- [x] First dictation with no language known at all (the user's very first message):
+  - transcribe without a hint; the same call returns the language
+  - if the language is normally written in a non-Latin script but the text is mostly Latin letters
+    (`looks_romanized` in `backend/language.py`), re-transcribe once with the detected language as the hint
+  - logged as "Dictation without a hint", so M5 can measure how often they go wrong
+  - small check: a Hindi clip without a hint came back as `hi` in Devanagari (one word misheard, see below)
 - [ ] Transcription accuracy: in M0b, Flash Lite misheard Tamil and Chinese words with or without a hint, but
   Gemini Live heard the same Tamil audio correctly. Compare a stronger transcription model, or more thinking,
   on those clips.
@@ -146,20 +157,23 @@ after asking first, and kept small, so they don't use up the API quotas the runn
   - a headless browser run of dictation in two Tier 1 languages, including a New chat that keeps the hint
   - target: the right language and script for at least 90% of clips with a hint
 
-### Phase M3: Voice (Gemini Live)
-- [ ] `live.py` agent prompt:
+### Phase M3: Voice (Gemini Live) (built, test pending)
+- [x] `live.py` agent prompt:
   - always call `search_documents` with an English query
   - answer in the language the user is speaking, in its usual script
-- [ ] `/live?lang=<code>`:
+- [x] `/live?lang=<code>`:
   - when a language is known, the system prompt adds "The user usually speaks <language>; answer in the
     language they speak"
   - relay mode passes it to `RAGChain.answer()`
-- [ ] Detect each finished voice turn's language from its transcript and send a `language` event, so the
-  frontend updates the conversation language
-- [ ] Fix `similarity()` to match words in any script (`\w+`)
-- [ ] Remove the spaces Live puts between Chinese and Japanese characters in transcripts, before showing or
-  saving them (M0b)
-- [ ] Guard in `search_documents`: if Gemini sends a non-English query, translate it before searching. In M0b,
+- [x] Each voice turn's language is sent as a `language` event, so the frontend updates the conversation
+  language. No extra call: in agent mode `search_documents` has a `language` argument that Gemini fills in;
+  in relay mode it comes from `RAGChain.answer()`. Small talk in agent mode has no tool call, so it keeps the
+  previous language.
+- [x] Fix `similarity()` to match words in any script (`\w+`)
+- [x] Remove the spaces Live puts between Chinese and Japanese characters in transcripts, before showing or
+  saving them (`tidyTranscript` in `frontend/src/language.js`)
+- [x] Guard in `search_documents`: if Gemini sends a query with non-English letters, translate it with
+  Flash Lite before searching (`to_english_query` in `rag.py`). In M0b,
   one Tamil query wasn't translated, and retrieval failed.
 - [ ] Hands-free question text (behind the `LIVE_RETRANSCRIBE` flag, depends on Open decision 3):
   - the model sometimes returns the user's words romanized
@@ -173,17 +187,17 @@ after asking first, and kept small, so they don't use up the API quotas the runn
     history
   - targets: English query 100%, answer in the right language at least 95%
 
-### Phase M4: Chat display
-- [ ] Set `lang` on each message from its detected language, so the browser picks fonts and line breaking
+### Phase M4: Chat display (built, screenshots pending)
+- [x] Set `lang` on each message from its detected language, so the browser picks fonts and line breaking
   correctly
-- [ ] Set `dir="auto"` on message text, so Arabic, Urdu, Persian and Hebrew lay out right to left. Mixed
+- [x] Set `dir="auto"` on message text and the message box, so Arabic, Urdu, Persian and Hebrew lay out right to left. Mixed
   messages also need checking: English sources under an Arabic answer.
-- [ ] Fonts:
+- [x] Fonts:
   - fall back to system fonts first
   - add the Noto family (Devanagari, Telugu, Tamil, Bengali, Arabic, CJK…) through Google Fonts with
-    `unicode-range`, so only the needed fonts load
-  - check line height for Indic and Thai scripts
-- [ ] Label the sources list "Sources (English)" when the answer isn't in English
+    `unicode-range`, so only the needed fonts load. Japanese and Korean prefer their own CJK font.
+  - line height 1.8 for Indic, Thai, Lao, Burmese, Khmer, Arabic, Urdu and Persian messages
+- [x] Label the sources list "… sources (English)" when the answer isn't in English
 - [ ] **Test:** screenshots in Hindi, Telugu, Arabic, Japanese and Thai, in light and dark themes, at phone
   width
 
@@ -221,8 +235,8 @@ Not built unless M5 shows that first messages without a hint fail too often. If 
 Decided on 2026-10-13: buttons, statuses, the sidebar and error messages stay **in English**. Only the chat
 content follows the user's language: their question and the answer.
 
-### Phase M6: Docs
-- [ ] Update README.md, VOICE_FEATURES.md and voice_plan.md: language detection and the remembered language, new parameters
+### Phase M6: Docs ✅ (2026-10-13)
+- [x] Update README.md, VOICE_FEATURES.md and voice_plan.md: language detection and the remembered language, new parameters
   and events, the tiers, and known limits
 
 ---

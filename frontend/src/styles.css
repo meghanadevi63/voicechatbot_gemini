@@ -1,3 +1,11 @@
+/* System fonts first; Noto (index.html) covers scripts the system lacks */
+:root {
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Devanagari", "Noto Sans Telugu", "Noto Sans Tamil",
+    "Noto Sans Bengali", "Noto Sans Kannada", "Noto Sans Malayalam", "Noto Sans Gujarati", "Noto Sans Gurmukhi",
+    "Noto Sans Oriya", "Noto Sans Sinhala", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Thai", "Noto Sans SC",
+    "Noto Sans JP", "Noto Sans KR", sans-serif;
+}
+
 :root {
   --bg: #ffffff;
   --bg-subtle: #f6f7f9;
@@ -54,7 +62,7 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font);
   font-size: 15px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -825,4 +833,19 @@ code {
   .hint {
     display: none;
   }
+}
+
+/* Chat text in other languages: Japanese and Korean prefer their own CJK fonts (shared Han characters look
+   different), and scripts with tall marks above and below the line get more line height */
+:lang(ja) {
+  font-family: system-ui, "Noto Sans JP", var(--font);
+}
+
+:lang(ko) {
+  font-family: system-ui, "Noto Sans KR", var(--font);
+}
+
+:is(:lang(hi), :lang(mr), :lang(ne), :lang(bn), :lang(as), :lang(te), :lang(ta), :lang(kn), :lang(ml), :lang(gu),
+    :lang(pa), :lang(or), :lang(si), :lang(th), :lang(lo), :lang(my), :lang(km), :lang(ar), :lang(ur), :lang(fa)) {
+  line-height: 1.8;
 }

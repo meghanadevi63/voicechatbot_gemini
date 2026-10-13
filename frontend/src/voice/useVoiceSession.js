@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { tidyTranscript } from "../language.js";
 import { micError, micSupported, openMic } from "./mic.js";
 import playbackUrl from "./playback-worklet.js?url";
 
@@ -20,7 +21,7 @@ function closeError(event) {
   return event.code === 1006 ? "Can't reach the backend. Is it running?" : "The voice connection closed.";
 }
 
-const newTurn = () => ({ user: "", assistant: "", ragAnswer: "", sources: [], interrupted: false });
+const newTurn = () => ({ user: "", assistant: "", ragAnswer: "", sources: [], interrupted: false, language: null });
 
 // Marks the first event of a new turn (clears any caption left from an unfinished one)
 function beginTurn(s) {
@@ -44,8 +45,8 @@ function pcm16ToFloat32(buffer) {
  * state: idle | connecting | listening | thinking | speaking | error
  * levelRef: current mic loudness (0..1), read by the level meter without re-rendering
  * caption: live transcript of the turn in progress; cleared once the turn completes
- * onTurn({user, assistant, sources, interrupted}) is called when the model finishes a turn
- * (in relay mode, assistant is the RAG answer text).
+ * onTurn({user, assistant, sources, interrupted, language}) is called when the model finishes a turn
+ * (in relay mode, assistant is the RAG answer text; language is the turn's detected language, if any).
  */
 export default function useVoiceSession({ onTurn } = {}) {
   const [state, setState] = useState("idle");
@@ -119,13 +120,13 @@ export default function useVoiceSession({ onTurn } = {}) {
         case "input_transcript":
           beginTurn(s);
           s.turn.user += event.text;
-          s.caption.user += event.text;
+          s.caption.user = tidyTranscript(s.caption.user + event.text);
           setCaption({ ...s.caption });
           break;
         case "output_transcript":
           beginTurn(s);
           s.turn.assistant += event.text;
-          s.caption.assistant += event.text;
+          s.caption.assistant = tidyTranscript(s.caption.assistant + event.text);
           setCaption({ ...s.caption });
           break;
         case "tool_call":
@@ -135,6 +136,9 @@ export default function useVoiceSession({ onTurn } = {}) {
           break;
         case "sources":
           s.turn.sources = event.sources;
+          break;
+        case "language":
+          s.turn.language = event.language;
           break;
         case "rag_answer":
           s.turn.ragAnswer = event.text;
@@ -147,11 +151,11 @@ export default function useVoiceSession({ onTurn } = {}) {
           refresh(s);
           break;
         case "turn_complete": {
-          const { interrupted, ragAnswer, sources } = s.turn;
-          const user = s.turn.user.trim();
+          const { interrupted, ragAnswer, sources, language } = s.turn;
+          const user = tidyTranscript(s.turn.user).trim();
           // Relay mode: keep the RAG text, unless the user cut it off (then keep what was actually said)
-          const assistant = ((!interrupted && ragAnswer) || s.turn.assistant).trim();
-          onTurnRef.current?.({ user, assistant, sources, interrupted });
+          const assistant = tidyTranscript((!interrupted && ragAnswer) || s.turn.assistant).trim();
+          onTurnRef.current?.({ user, assistant, sources, interrupted, language });
           // The finished turn now lives in the chat, so the live caption can go
           s.turn = newTurn();
           s.caption = { ...EMPTY_CAPTION };
@@ -174,9 +178,10 @@ export default function useVoiceSession({ onTurn } = {}) {
   /**
    * answer: agent | rag; history: conversation so far as [{role, content}]
    * mic: true for hands-free; false with text for a spoken reply to that text
+   * lang: the conversation's language, if known (a hint for Gemini)
    */
   const start = useCallback(
-    async ({ answer, history = [], mic = true, text = "" } = {}) => {
+    async ({ answer, history = [], mic = true, text = "", lang = null } = {}) => {
       if (sessionRef.current) teardown(sessionRef.current); // one session at a time
       setError(null);
       setMuted(false);
@@ -195,6 +200,7 @@ export default function useVoiceSession({ onTurn } = {}) {
         ctx: new AudioContext(),
         answer,
         history,
+        lang,
         mic,
         text,
         awaitingReply: Boolean(text),
@@ -235,7 +241,7 @@ export default function useVoiceSession({ onTurn } = {}) {
         }
         await s.ctx.resume();
 
-        const ws = new WebSocket(liveUrl({ answer, talk: "vad" }));
+        const ws = new WebSocket(liveUrl({ answer, talk: "vad", lang }));
         ws.binaryType = "arraybuffer";
         s.ws = ws;
         ws.onopen = () => ws.send(JSON.stringify({ type: "history", turns: history }));
@@ -272,10 +278,10 @@ export default function useVoiceSession({ onTurn } = {}) {
   // The answer mode is fixed per Gemini session: a hands-free session reconnects with the
   // conversation so far. Called from a click, so the new AudioContext is allowed to play.
   const switchAnswer = useCallback(
-    (answer, history) => {
+    (answer, history, lang) => {
       const s = sessionRef.current;
       if (!s?.mic || s.answer === answer) return;
-      start({ answer, history, mic: true });
+      start({ answer, history, mic: true, lang });
     },
     [start]
   );

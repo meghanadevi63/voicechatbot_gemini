@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { ChevronIcon, FileIcon } from "./icons.jsx";
 
-export default function Sources({ sources }) {
+// translated: the answer isn't in English, while the sources quote the English documents
+export default function Sources({ sources, translated }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -9,6 +10,7 @@ export default function Sources({ sources }) {
       <button className={`sources-toggle ${open ? "open" : ""}`} onClick={() => setOpen(!open)}>
         <ChevronIcon />
         {sources.length} {sources.length === 1 ? "source" : "sources"}
+        {translated && " (English)"}
       </button>
 
       {open && (

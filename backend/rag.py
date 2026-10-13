@@ -12,6 +12,7 @@ from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 
 from backend.config import get_settings
+from backend.language import has_non_english_letters, is_known
 from backend.vectorstore import get_vectorstore
 
 logger = logging.getLogger(__name__)
@@ -34,14 +35,17 @@ Do not state any facts or answer questions. You may offer to help with questions
 If the intent is "document_query", write a standalone search query in `search_query`. Use the conversation
 history only to resolve references the message can't be understood without ("it", "that", "the second one",
 "tell me more"). If the message already makes sense on its own, copy it unchanged (translated into English if
-it isn't English). Never add a
-document title, book title, author name or other context the user didn't ask about: every search already runs
-over the user's documents, and those extra words pull in the wrong passages. Keep the key terms. Leave `reply`
-empty.
+it isn't English). Never add a document title, book title, author name or other context the user didn't ask
+about: every search already runs over the user's documents, and those extra words pull in the wrong passages.
+Keep the key terms. Leave `reply` empty.
 
 Languages: the user may write in any language, but the documents are in English.
+The conversation's language so far: {conversation_language}.
 - `language`: the language of the user's latest message as a BCP-47 code ("en", "hi", "te", "pt-BR", ...).
-  Use "und" when the message is too short or too mixed to tell (e.g. "ok", "thanks", a single name).
+  Use "und" when the message is too short or too mixed to tell (a single name, a number).
+  Short acknowledgements: if the conversation's language is known and the latest message is only a short
+  acknowledgement, greeting, thanks or goodbye of a few words ("ok", "ok thanks", "bye"), even in English,
+  set `language` to "und" and write `reply` in the conversation's language.
 - `search_query` is always in English. Translate the message if needed, keeping its key terms.
 - `alt_query`: if a key term in the message could be translated into English in more than one way (a word
   that means both "habit" and "behavior", or a concept with a well-known English name such as "habit
@@ -115,10 +119,6 @@ def to_messages(history: list[dict]) -> list:
     return messages
 
 
-def is_known(language: str | None) -> bool:
-    return bool(language) and language.lower() not in ("und", "auto")
-
-
 def reply_language(detected: str, conversation: str | None) -> str:
     """The language instruction for the answer prompt."""
     if is_known(detected):
@@ -131,6 +131,28 @@ def reply_language(detected: str, conversation: str | None) -> str:
 @lru_cache
 def get_gemini() -> genai.Client:
     return genai.Client(api_key=get_settings().gemini_api_key)
+
+
+def to_english_query(query: str) -> str:
+    """Translate a search query into English when it has non-English letters (the documents are English).
+    Used where no router writes the query (Gemini Live's search_documents). Returns the query unchanged on
+    failure."""
+    if not has_non_english_letters(query):
+        return query
+    try:
+        response = get_gemini().models.generate_content(
+            model=get_settings().answer_model,
+            contents=f"Translate this search query into English. Reply with only the translation.\n\n{query}",
+            config=types.GenerateContentConfig(
+                temperature=0, thinking_config=types.ThinkingConfig(thinking_level="MINIMAL")
+            ),
+        )
+        english = (response.text or "").strip()
+    except Exception:
+        logger.exception("Query translation failed; searching with the original")
+        return query
+    logger.info("Translated search query %r -> %r", query, english)
+    return english or query
 
 
 class RAGChain:
@@ -177,9 +199,15 @@ class RAGChain:
         ranked = sorted(best.values(), key=lambda item: item[0], reverse=True)
         return [doc for _, doc in ranked[:k]]
 
-    def route(self, question: str, messages: list) -> Route:
+    def route(self, question: str, messages: list, language: str | None = None) -> Route:
         try:
-            return self.router.invoke({"history": messages, "question": question})
+            return self.router.invoke(
+                {
+                    "history": messages,
+                    "question": question,
+                    "conversation_language": language if is_known(language) else "unknown",
+                }
+            )
         except Exception:
             # Never block an answer on the router: fall back to normal retrieval.
             logger.exception("Intent router failed; falling back to retrieval")
@@ -220,7 +248,7 @@ class RAGChain:
     def answer(self, question: str, history: list[dict], language: str | None = None) -> dict:
         """language: the conversation's language (BCP-47), used when the question's own language is unclear."""
         messages = to_messages(history)
-        route = self.route(question, messages)
+        route = self.route(question, messages, language)
         detected = route.language if is_known(route.language) else (language if is_known(language) else "und")
         logger.info(
             "Routed %r -> %s (language=%s, query=%r, alt=%r)",
