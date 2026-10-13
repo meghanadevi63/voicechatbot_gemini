@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -16,6 +17,10 @@ from backend.live import LiveBridge
 from backend.rag import RAGChain
 from backend.transcribe import MAX_SECONDS, RATE, transcribe
 
+# Uvicorn only configures its own loggers; this shows the app's (routing, languages, voice sessions)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+for noisy in ("httpx", "google_genai"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 
 class ChatTurn(BaseModel):
     role: Literal["user", "assistant"]
@@ -25,6 +30,8 @@ class ChatTurn(BaseModel):
 class ChatRequest(BaseModel):
     question: str
     history: list[ChatTurn] = []
+    # The conversation's language (BCP-47), used when the question's own language is unclear
+    language: str | None = None
 
 
 class Source(BaseModel):
@@ -36,6 +43,8 @@ class Source(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[Source]
+    # Language of the question (BCP-47), or the conversation's language, or "und"
+    language: str
 
 
 state: dict = {}
@@ -72,7 +81,7 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=400, detail="Question is empty")
     try:
         return await run_in_threadpool(
-            state["rag"].answer, req.question, [t.model_dump() for t in req.history]
+            state["rag"].answer, req.question, [t.model_dump() for t in req.history], req.language
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -258,7 +258,7 @@ class Spike:
     async def search_tool(self, name, args):
         from backend.rag import format_docs
 
-        docs = await asyncio.to_thread(self.rag.retriever.invoke, args.get("query", ""))
+        docs = await asyncio.to_thread(self.rag.retrieve, args.get("query", ""))
         return {"result": format_docs(docs)}
 
     async def basic(self):

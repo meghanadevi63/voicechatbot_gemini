@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     groq_model: str = "openai/gpt-oss-20b"
     # Small, fast model used only to classify intent before retrieval
     router_model: str = "openai/gpt-oss-20b"
+    # Who writes RAG answers: gemini (better across languages) or groq. Groq is also the fallback if Gemini fails.
+    answer_provider: str = "gemini"
+    answer_model: str = "gemini-3.5-flash-lite"
 
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
