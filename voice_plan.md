@@ -135,7 +135,8 @@ language (see [MULTILANGUAGE_PLAN.md](MULTILANGUAGE_PLAN.md)).
 | Server → browser | `{"type":"language","language"}` | The current turn's detected language (BCP-47); the browser makes it the conversation's language |
 | Server → browser | `{"type":"interrupted"}` | Clear queued audio now |
 | Server → browser | `{"type":"turn_complete"}` | Model finished its turn |
-| Server → browser | `{"type":"reconnecting"}` | Reconnecting with a resumption handle |
+| Server → browser | `{"type":"reconnecting","planned"}` | The Gemini connection ended (`planned`: Gemini announced it with `go_away`). The browser clears the partial answer; an unanswered question is asked again |
+| Server → browser | `{"type":"resumed"}` | The new Gemini connection is open (the browser connection stayed open throughout) |
 | Server → browser | `{"type":"error","message"}` | Something failed |
 
 ## UI
@@ -334,9 +335,28 @@ example after a mode switch or restart.
 - Sending mid-dictation waited for the last clip ("What is the 2-minute rule?") before sending.
 
 ### Phase 5: Robustness
-- [ ] Session limits: on `GoAway`, reconnect with the resumption handle; turn on context compression
-- [ ] Gemini errors (`1011 Internal error`, a turn that never gets an answer): reconnect once with the
-  resumption handle, add a turn timeout, and show "Voice service hiccup, reconnecting…" in the UI
+- [x] Session limits (built 2026-10-14, live test pending): session resumption and sliding-window context
+  compression are on. On `go_away` the bridge reconnects with the latest resumption handle, right away
+  between turns, or once the current turn completes. The browser's WebSocket stays open; only the Gemini
+  connection is replaced.
+- [x] Gemini errors (built 2026-10-14, live test pending):
+  - a retryable close (`1001`, `1006`, `1011`, `1012`, `1013`, `1014`, 5xx, network errors) or a question
+    with no audio for 15 s (`REPLY_TIMEOUT_S`) reconnects after 1 s, then 3 s; a completed turn resets the
+    count. After that the session ends with "The voice service is having trouble… try again in a minute".
+  - a question not yet answered (typed text, or the input transcript) is asked again as text on the new
+    connection; in relay mode its RAG answer is first removed from the history
+  - a refused resumption handle falls back to a fresh session seeded with the conversation. Agent mode now
+    keeps its own history (input + output transcripts) for this.
+  - the UI shows "Reconnecting…" and drops the partial answer
+  - not covered: in hands-free mode a question Gemini never transcribes (it sends the transcript together
+    with the reply), so a silent turn there still waits for Gemini's own error
+  - checked offline with a fake Gemini client (1011 then success, silent turn, repeated failures,
+    `go_away` mid-answer)
+  - checked with real `gemini-3.1-flash-live-preview` (2026-10-14, agent mode, in-process bridge): the
+    resumption and compression settings are accepted; a handle arrives after the first turn; a failure
+    between turns resumed with the handle in ~2 s and the model remembered the earlier question; a failure
+    mid-answer resumed, asked the question again, and answered it in full. A real `go_away` (after
+    ~10 min) and a real `1011` haven't been seen yet.
 - [ ] Clear errors in the UI: mic permission denied, no microphone, backend down, Gemini errors
 - [ ] Close the WebSocket when the tab closes or the component unmounts
 - [ ] Log for each turn:

@@ -718,7 +718,8 @@ code {
 }
 
 .voice-thinking .level-meter span,
-.voice-connecting .level-meter span {
+.voice-connecting .level-meter span,
+.voice-reconnecting .level-meter span {
   background: var(--text-muted);
 }
 

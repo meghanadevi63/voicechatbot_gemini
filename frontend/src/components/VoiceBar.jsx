@@ -6,6 +6,7 @@ const LABELS = {
   listening: "Listening…",
   thinking: "Searching the documents…",
   speaking: "Speaking…",
+  reconnecting: "Reconnecting…",
   error: "Voice chat stopped",
 };
 

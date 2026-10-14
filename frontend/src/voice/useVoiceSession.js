@@ -42,7 +42,8 @@ function pcm16ToFloat32(buffer) {
  *  - hands-free (mic: true): a spoken conversation; Gemini detects pauses and the user can talk over answers
  *  - spoken reply (mic: false, text): speaks the answer to one dictated question, then closes itself
  *
- * state: idle | connecting | listening | thinking | speaking | error
+ * state: idle | connecting | listening | thinking | speaking | reconnecting | error
+ * (reconnecting: the backend is replacing a dropped or expiring Gemini connection)
  * levelRef: current mic loudness (0..1), read by the level meter without re-rendering
  * caption: live transcript of the turn in progress; cleared once the turn completes
  * onTurn({user, assistant, sources, interrupted, language}) is called when the model finishes a turn
@@ -99,10 +100,10 @@ export default function useVoiceSession({ onTurn } = {}) {
     (s) => {
       if (s.closed || !s.ready) return;
       const speaking = s.playing || (s.gotAudio && !s.turnDone);
-      setState(speaking ? "speaking" : s.thinking ? "thinking" : "listening");
+      setState(s.reconnecting ? "reconnecting" : speaking ? "speaking" : s.thinking ? "thinking" : "listening");
       // A spoken reply closes itself once the answer has been played
       clearTimeout(s.closeTimer);
-      if (!s.mic && !s.awaitingReply && !speaking) {
+      if (!s.mic && !s.awaitingReply && !speaking && !s.reconnecting) {
         s.closeTimer = setTimeout(() => !s.playing && finish(s), AUTO_CLOSE_DELAY_MS);
       }
     },
@@ -115,6 +116,22 @@ export default function useVoiceSession({ onTurn } = {}) {
         case "ready":
           s.ready = true;
           if (s.text) s.ws.send(JSON.stringify({ type: "text", text: s.text }));
+          refresh(s);
+          break;
+        case "reconnecting":
+          // The backend is opening a new Gemini connection and will ask an unanswered question again,
+          // so the partial answer is dropped; the user's words stay
+          s.reconnecting = true;
+          s.playback.port.postMessage({ type: "clear" });
+          s.turn = { ...newTurn(), user: s.turn.user, language: s.turn.language };
+          s.caption = { ...s.caption, assistant: "" };
+          setCaption({ ...s.caption });
+          s.thinking = false;
+          s.gotAudio = false;
+          refresh(s);
+          break;
+        case "resumed":
+          s.reconnecting = false;
           refresh(s);
           break;
         case "input_transcript":
@@ -205,6 +222,7 @@ export default function useVoiceSession({ onTurn } = {}) {
         text,
         awaitingReply: Boolean(text),
         ready: false,
+        reconnecting: false,
         muted: false,
         playing: false,
         thinking: false,
