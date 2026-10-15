@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { isSttPipeline } from "../voice/useVoiceSession.js";
 import { CloseIcon, MicIcon, MicOffIcon } from "./icons.jsx";
 
 const LABELS = {
@@ -42,11 +43,13 @@ export function LevelMeter({ levelRef, active }) {
 
 // Status and controls for a hands-free conversation or a spoken reply to a dictated question
 export default function VoiceBar({ voice }) {
-  const { state, error, muted, withMic, levelRef, stop, toggleMute } = voice;
+  const { state, error, muted, withMic, pipeline, levelRef, stop, toggleMute } = voice;
   if (state === "idle") return null;
 
   let label = LABELS[state];
-  if (state === "listening" && !withMic) label = "Thinking…"; // spoken reply: waiting for the answer
+  // STT + TTS: speech is ignored from the end of the question until the answer plays
+  if (state === "thinking" && isSttPipeline(pipeline)) label = "Preparing the answer…";
+  else if (state === "listening" && !withMic) label = "Thinking…"; // spoken reply: waiting for the answer
   else if (state === "listening" && muted) label = "Muted";
   const active = state !== "error";
 

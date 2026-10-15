@@ -24,15 +24,24 @@ function loadMessages() {
   }
 }
 
-// Voice settings: answer mode (agent: Gemini answers | rag: Gemini reads the RAG answer)
+// Voice settings: pipeline (live: Gemini Live | stt-tts: transcriber + RAG + Flash TTS | stt-live: transcriber
+// + RAG + a Live model reading the answer) and the Live answer mode (agent: Gemini answers | rag: Gemini reads
+// the RAG answer). The stt pipelines always read the RAG answer.
+const PIPELINES = ["live", "stt-tts", "stt-live"];
 function loadVoiceSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(VOICE_KEY)) || {};
-    return { answer: saved.answer === "rag" ? "rag" : "agent" };
+    return {
+      pipeline: PIPELINES.includes(saved.pipeline) ? saved.pipeline : "live",
+      answer: saved.answer === "rag" ? "rag" : "agent",
+    };
   } catch {
-    return { answer: "agent" };
+    return { pipeline: "live", answer: "agent" };
   }
 }
+
+// What a voice session is started with
+const voiceMode = ({ pipeline, answer }) => ({ pipeline, answer: pipeline === "live" ? answer : "rag" });
 
 // History sent to the backend: skip failed replies and the question that caused them.
 function toHistory(messages) {
@@ -75,7 +84,7 @@ export default function App() {
   );
 
   const voice = useVoiceSession({ onTurn: addVoiceTurn });
-  const { start: startVoice, stop: stopVoice, switchAnswer } = voice;
+  const { start: startVoice, stop: stopVoice, switchVoice } = voice;
   const handsFreeActive = voice.withMic && voice.state !== "idle";
 
   const changeVoiceSettings = useCallback(
@@ -87,9 +96,9 @@ export default function App() {
       } catch {
         // Storage unavailable: the choice just isn't remembered
       }
-      switchAnswer(next.answer, toHistory(messages), language); // reconnects a hands-free conversation
+      switchVoice(voiceMode(next), toHistory(messages), language); // restarts a hands-free conversation
     },
-    [voiceSettings, switchAnswer, messages, language]
+    [voiceSettings, switchVoice, messages, language]
   );
 
   useEffect(() => {
@@ -122,14 +131,14 @@ export default function App() {
     async (question, { dictated = false, language: dictatedLanguage = null } = {}) => {
       const history = toHistory(messages);
       if (dictated) {
-        // Dictated question: Gemini answers out loud (in the chosen answer mode); the answer
+        // Dictated question: answered out loud by the chosen pipeline and answer mode; the answer
         // arrives as a voice turn through addVoiceTurn
         const lang = isKnown(dictatedLanguage) ? dictatedLanguage : language;
         setMessages((prev) => [
           ...prev,
           { id: newId(), role: "user", content: question, voice: true, ...(isKnown(lang) ? { lang } : {}) },
         ]);
-        startVoice({ answer: voiceSettings.answer, history, mic: false, text: question, lang });
+        startVoice({ ...voiceMode(voiceSettings), history, mic: false, text: question, lang });
         return;
       }
       const questionId = newId();
@@ -152,7 +161,7 @@ export default function App() {
         setPending(false);
       }
     },
-    [messages, startVoice, voiceSettings.answer, language, noteLanguage]
+    [messages, startVoice, voiceSettings, language, noteLanguage]
   );
 
   const reingest = useCallback(async () => {
@@ -219,7 +228,7 @@ export default function App() {
           onSend={ask}
           disabled={pending}
           onHandsFree={() =>
-            startVoice({ answer: voiceSettings.answer, history: toHistory(messages), mic: true, lang: language })
+            startVoice({ ...voiceMode(voiceSettings), history: toHistory(messages), mic: true, lang: language })
           }
           onDictateStart={() => !voice.withMic && stopVoice()}
           handsFreeActive={handsFreeActive}

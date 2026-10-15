@@ -31,14 +31,40 @@ function IngestResult({ ingest }) {
   return null;
 }
 
-const ANSWER_MODES = [
-  { value: "agent", label: "Gemini answers", hint: "Gemini searches the documents and answers. Fastest." },
+const PIPELINES = [
   {
-    value: "rag",
-    label: "Read RAG answer",
-    hint: "Gemini reads the same answer typed chat gives. About a second slower.",
+    value: "live",
+    label: "Gemini 3.1 Flash Live",
+    hint: "One Live model listens, answers and speaks.",
+  },
+  {
+    value: "stt-tts",
+    label: "Transcribe 3.5 + Flash TTS 3.8",
+    hint: "Live text while you speak; Flash TTS reads the RAG answer. Slow to start speaking.",
+  },
+  {
+    value: "stt-live",
+    label: "Transcribe 3.5 + Live 3.1 voice",
+    hint: "Live text while you speak; the Live model reads the RAG answer. Starts speaking quickly.",
   },
 ];
+
+const ANSWER_MODES = {
+  live: [
+    { value: "agent", label: "Gemini answers", hint: "Gemini searches the documents and answers. Fastest." },
+    {
+      value: "rag",
+      label: "Read RAG answer",
+      hint: "Gemini reads the same answer typed chat gives. About a second slower.",
+    },
+  ],
+  "stt-tts": [
+    { value: "rag", label: "Read RAG answer", hint: "Flash TTS reads the same answer typed chat gives." },
+  ],
+  "stt-live": [
+    { value: "rag", label: "Read RAG answer", hint: "The Live model reads the same answer typed chat gives." },
+  ],
+};
 
 function Choice({ name, options, value, onChange }) {
   return (
@@ -101,11 +127,21 @@ export default function Sidebar({
         </section>
 
         <section className="sidebar-section">
+          <h2>Voice pipeline</h2>
+          <Choice
+            name="voice-pipeline"
+            options={PIPELINES}
+            value={voiceSettings.pipeline}
+            onChange={(pipeline) => onVoiceSettings({ pipeline })}
+          />
+        </section>
+
+        <section className="sidebar-section">
           <h2>Voice answers</h2>
           <Choice
             name="voice-answer"
-            options={ANSWER_MODES}
-            value={voiceSettings.answer}
+            options={ANSWER_MODES[voiceSettings.pipeline]}
+            value={voiceSettings.pipeline === "live" ? voiceSettings.answer : "rag"}
             onChange={(answer) => onVoiceSettings({ answer })}
           />
         </section>

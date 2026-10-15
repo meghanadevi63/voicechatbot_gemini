@@ -133,6 +133,20 @@ def describe(e: BaseException) -> str:
     return str(e) or type(e).__name__
 
 
+async def receive_history(ws: WebSocket) -> list[dict]:
+    """The first browser message is the conversation so far: {"type":"history","turns":[...]}."""
+    raw = await asyncio.wait_for(ws.receive_text(), HISTORY_TIMEOUT_S)
+    msg = json.loads(raw)
+    if msg.get("type") != "history":
+        raise ValueError(f"got {msg.get('type')!r}")
+    turns = []
+    for t in msg.get("turns") or []:
+        role, content = t.get("role"), (t.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            turns.append({"role": role, "content": content})
+    return turns[-MAX_SEED_TURNS:]
+
+
 def live_config(
     answer_mode: AnswerMode,
     talk_mode: TalkMode,
@@ -342,17 +356,7 @@ class LiveBridge:
         return describe(e)
 
     async def receive_history(self) -> list[dict]:
-        """The first browser message is the conversation so far: {"type":"history","turns":[...]}."""
-        raw = await asyncio.wait_for(self.ws.receive_text(), HISTORY_TIMEOUT_S)
-        msg = json.loads(raw)
-        if msg.get("type") != "history":
-            raise ValueError(f"got {msg.get('type')!r}")
-        turns = []
-        for t in msg.get("turns") or []:
-            role, content = t.get("role"), (t.get("content") or "").strip()
-            if role in ("user", "assistant") and content:
-                turns.append({"role": role, "content": content})
-        return turns[-MAX_SEED_TURNS:]
+        return await receive_history(self.ws)
 
     async def seed_history(self, session):
         if not self.history:

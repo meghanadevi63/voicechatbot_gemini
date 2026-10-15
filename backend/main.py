@@ -15,6 +15,7 @@ from backend.config import get_settings
 from backend.ingest import ingest
 from backend.live import LiveBridge
 from backend.rag import RAGChain
+from backend.stt_tts import SttTtsBridge
 from backend.transcribe import MAX_SECONDS, RATE, transcribe
 
 # Uvicorn only configures its own loggers; this shows the app's (routing, languages, voice sessions)
@@ -128,6 +129,24 @@ async def live(ws: WebSocket, answer: str | None = None, talk: str | None = None
         await ws.close(code=1011, reason="GEMINI_API_KEY is not set on the server")
         return
     await LiveBridge(ws, state["rag"], answer, talk, lang).run()
+
+
+@app.websocket("/stt-tts")
+async def stt_tts(ws: WebSocket, lang: str | None = None, mic: bool = True, speaker: str = "tts"):
+    """Voice over the STT + TTS pipeline: same protocol as /live, RAG answers only.
+    mic=false: a spoken reply to a dictated question (text in, no transcriber).
+    speaker: tts (Flash TTS reads the answer) | live (a Gemini Live session reads it; faster)."""
+    if not origin_allowed(ws):
+        await ws.close(code=1008, reason="Origin not allowed")
+        return
+    await ws.accept()
+    if speaker not in ("tts", "live"):
+        await ws.close(code=1008, reason="speaker must be tts|live")
+        return
+    if not get_settings().gemini_api_key:
+        await ws.close(code=1011, reason="GEMINI_API_KEY is not set on the server")
+        return
+    await SttTtsBridge(ws, state["rag"], lang, mic, speaker).run()
 
 
 @app.post("/ingest")

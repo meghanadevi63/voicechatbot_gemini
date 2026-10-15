@@ -23,8 +23,9 @@ export default defineConfig({
     host: true,
     proxy: {
       ...Object.fromEntries(apiPaths.map((path) => [path, backend])),
-      // Voice chat WebSocket
+      // Voice chat WebSockets (Gemini Live, and the STT + TTS pipeline)
       "/live": { target: backend, ws: true },
+      "/stt-tts": { target: backend, ws: true },
     },
   },
 });

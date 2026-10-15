@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     live_talk_mode: str = "vad"
     # Dictation: transcribes each spoken clip into the message box
     transcribe_model: str = "gemini-3.5-flash-lite"
+    # STT + TTS voice pipeline (/stt-tts): streaming transcription, the RAG answer, then speech
+    stt_model: str = "gemini-3.5-transcribe-live"
+    tts_model: str = "gemini-3.8-flash-tts"
+    tts_voice: str = "Sulafat"
 
     # Comma-separated origins allowed to call the API directly from a browser.
     # Only needed when the frontend is served from a different origin.

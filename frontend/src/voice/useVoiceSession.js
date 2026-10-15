@@ -8,12 +8,16 @@ const BASE = (import.meta.env.VITE_BACKEND_URL || "").replace(/\/$/, "");
 const EMPTY_CAPTION = { user: "", assistant: "" };
 const AUTO_CLOSE_DELAY_MS = 500; // spoken replies: close this long after playback ends
 
-function liveUrl(params) {
+// live: one Gemini Live session | stt-tts: streaming transcriber + RAG answer + Flash TTS |
+// stt-live: the same, with a Live model reading the answer (both read the RAG answer only)
+export const isSttPipeline = (pipeline) => pipeline === "stt-tts" || pipeline === "stt-live";
+
+function voiceUrl(pipeline, params) {
   const origin = BASE
     ? BASE.replace(/^http/, "ws")
     : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
   const query = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString();
-  return `${origin}/live${query ? `?${query}` : ""}`;
+  return `${origin}/${isSttPipeline(pipeline) ? "stt-tts" : "live"}${query ? `?${query}` : ""}`;
 }
 
 function closeError(event) {
@@ -38,7 +42,8 @@ function pcm16ToFloat32(buffer) {
 }
 
 /**
- * A Gemini Live session over the backend's /live WebSocket (see voice_plan.md). Two kinds:
+ * A voice session over the backend's /live (Gemini Live) or /stt-tts (transcriber + RAG + TTS) WebSocket;
+ * both speak the same protocol (see voice_plan.md). Two kinds:
  *  - hands-free (mic: true): a spoken conversation; Gemini detects pauses and the user can talk over answers
  *  - spoken reply (mic: false, text): speaks the answer to one dictated question, then closes itself
  *
@@ -54,6 +59,7 @@ export default function useVoiceSession({ onTurn } = {}) {
   const [error, setError] = useState(null);
   const [muted, setMuted] = useState(false);
   const [withMic, setWithMic] = useState(false);
+  const [pipeline, setPipeline] = useState("live");
   const [caption, setCaption] = useState(EMPTY_CAPTION);
   const levelRef = useRef(0);
   const sessionRef = useRef(null);
@@ -135,9 +141,16 @@ export default function useVoiceSession({ onTurn } = {}) {
           refresh(s);
           break;
         case "input_transcript":
+        case "interim_transcript":
           beginTurn(s);
-          s.turn.user += event.text;
-          s.caption.user = tidyTranscript(s.caption.user + event.text);
+          if (isSttPipeline(s.pipeline)) {
+            // The transcriber sends the turn's full text so far each time: replace
+            s.turn.user = event.text;
+            s.caption.user = tidyTranscript(event.text);
+          } else {
+            s.turn.user += event.text;
+            s.caption.user = tidyTranscript(s.caption.user + event.text);
+          }
           setCaption({ ...s.caption });
           break;
         case "output_transcript":
@@ -159,6 +172,12 @@ export default function useVoiceSession({ onTurn } = {}) {
           break;
         case "rag_answer":
           s.turn.ragAnswer = event.text;
+          if (isSttPipeline(s.pipeline)) {
+            // TTS reads exactly this text, so it is shown (and kept, even if interrupted) as soon as it arrives
+            s.turn.assistant = event.text;
+            s.caption.assistant = tidyTranscript(event.text);
+            setCaption({ ...s.caption });
+          }
           break;
         case "interrupted":
           // The user talked over the answer: drop the queued audio and listen again
@@ -193,16 +212,18 @@ export default function useVoiceSession({ onTurn } = {}) {
   );
 
   /**
+   * pipeline: live | stt-tts | stt-live (the stt ones always answer in rag mode)
    * answer: agent | rag; history: conversation so far as [{role, content}]
    * mic: true for hands-free; false with text for a spoken reply to that text
    * lang: the conversation's language, if known (a hint for Gemini)
    */
   const start = useCallback(
-    async ({ answer, history = [], mic = true, text = "", lang = null } = {}) => {
+    async ({ pipeline = "live", answer, history = [], mic = true, text = "", lang = null } = {}) => {
       if (sessionRef.current) teardown(sessionRef.current); // one session at a time
       setError(null);
       setMuted(false);
       setWithMic(mic);
+      setPipeline(pipeline);
       setCaption(EMPTY_CAPTION);
       setState("connecting");
 
@@ -215,6 +236,7 @@ export default function useVoiceSession({ onTurn } = {}) {
       // Created before any await, while we're still inside the click, so the browser allows audio
       const s = {
         ctx: new AudioContext(),
+        pipeline,
         answer,
         history,
         lang,
@@ -259,7 +281,10 @@ export default function useVoiceSession({ onTurn } = {}) {
         }
         await s.ctx.resume();
 
-        const ws = new WebSocket(liveUrl({ answer, talk: "vad", lang }));
+        const params = isSttPipeline(pipeline)
+          ? { lang, mic: mic ? null : "false", speaker: pipeline === "stt-live" ? "live" : null }
+          : { answer, talk: "vad", lang };
+        const ws = new WebSocket(voiceUrl(pipeline, params));
         ws.binaryType = "arraybuffer";
         s.ws = ws;
         ws.onopen = () => ws.send(JSON.stringify({ type: "history", turns: history }));
@@ -293,13 +318,13 @@ export default function useVoiceSession({ onTurn } = {}) {
     setCaption(EMPTY_CAPTION);
   }, [finish]);
 
-  // The answer mode is fixed per Gemini session: a hands-free session reconnects with the
+  // The pipeline and answer mode are fixed per session: a hands-free session restarts with the
   // conversation so far. Called from a click, so the new AudioContext is allowed to play.
-  const switchAnswer = useCallback(
-    (answer, history, lang) => {
+  const switchVoice = useCallback(
+    ({ pipeline, answer }, history, lang) => {
       const s = sessionRef.current;
-      if (!s?.mic || s.answer === answer) return;
-      start({ answer, history, mic: true, lang });
+      if (!s?.mic || (s.pipeline === pipeline && s.answer === answer)) return;
+      start({ pipeline, answer, history, mic: true, lang });
     },
     [start]
   );
@@ -319,5 +344,5 @@ export default function useVoiceSession({ onTurn } = {}) {
   // Close the session if the component goes away (e.g. hot reload)
   useEffect(() => () => sessionRef.current && teardown(sessionRef.current), [teardown]);
 
-  return { state, error, muted, withMic, caption, levelRef, start, stop, toggleMute, switchAnswer };
+  return { state, error, muted, withMic, pipeline, caption, levelRef, start, stop, toggleMute, switchVoice };
 }
