@@ -156,6 +156,8 @@ export default function useVoiceSession({ onTurn } = {}) {
         case "output_transcript":
           beginTurn(s);
           s.turn.assistant += event.text;
+          // Relay mode already shows the RAG text, which Gemini's transcript of its speech lags behind
+          if (s.turn.ragAnswer) break;
           s.caption.assistant = tidyTranscript(s.caption.assistant + event.text);
           setCaption({ ...s.caption });
           break;
@@ -173,11 +175,12 @@ export default function useVoiceSession({ onTurn } = {}) {
         case "rag_answer":
           s.turn.ragAnswer = event.text;
           if (isSttPipeline(s.pipeline)) {
-            // TTS reads exactly this text, so it is shown (and kept, even if interrupted) as soon as it arrives
+            // TTS reads exactly this text, so it is kept even if interrupted
             s.turn.assistant = event.text;
-            s.caption.assistant = tidyTranscript(event.text);
-            setCaption({ ...s.caption });
           }
+          // Shown as soon as it arrives, before the voice starts reading it
+          s.caption.assistant = tidyTranscript(event.text);
+          setCaption({ ...s.caption });
           break;
         case "interrupted":
           // The user talked over the answer: drop the queued audio and listen again
